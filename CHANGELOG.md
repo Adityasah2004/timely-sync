@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.1.2] — 2026-05-31
+## [1.1.3] — 2026-05-31
 
 ### Bug Fixes
 - **Keyboard avoidance in sheets fixed (Android)** — `KeyboardAvoidingView` and `windowSoftInputMode` have no effect inside Android `Modal` windows (they only apply to the main Activity). Replaced with `react-native-keyboard-controller`'s `KeyboardAwareScrollView` which has first-class Modal support and is production-tested across all Android versions with Hermes. Sheet content now scrolls the focused input above the keyboard correctly, matching Expo Go behaviour.
