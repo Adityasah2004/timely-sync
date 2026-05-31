@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import {
   View, Text, Modal, TouchableOpacity, TouchableWithoutFeedback,
   TextInput, ScrollView, StyleSheet, ActivityIndicator, Alert,
-  Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors } from '../lib/tokens';
@@ -223,10 +222,11 @@ function SheetShell({ visible, onClose, children }: { visible: boolean; onClose:
             <View style={sh.sheet}>
               <View style={sh.grab} />
               <KeyboardAwareScrollView
-                showsVerticalScrollIndicator={false}
+                enableOnAndroid
                 keyboardShouldPersistTaps="handled"
-                bottomOffset={24}
+                showsVerticalScrollIndicator={false}
                 contentContainerStyle={{ paddingBottom: 40 }}
+                extraScrollHeight={20}
               >
                 {children}
               </KeyboardAwareScrollView>
