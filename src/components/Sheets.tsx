@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import {
   View, Text, Modal, TouchableOpacity, TouchableWithoutFeedback,
   TextInput, ScrollView, StyleSheet, ActivityIndicator, Alert,
+  KeyboardAvoidingView, Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors } from '../lib/tokens';
@@ -209,31 +209,28 @@ import { Icon } from './Icon';
 // ─── Sheet shell ────────────────────────────────────────────
 function SheetShell({ visible, onClose, children }: { visible: boolean; onClose: () => void; children: React.ReactNode }) {
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-      statusBarTranslucent
-    >
-      <TouchableWithoutFeedback onPress={onClose}>
-        <View style={sh.backdrop}>
-          <TouchableWithoutFeedback>
-            <View style={sh.sheet}>
-              <View style={sh.grab} />
-              <KeyboardAwareScrollView
-                enableOnAndroid
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ paddingBottom: 40 }}
-                extraScrollHeight={20}
-              >
-                {children}
-              </KeyboardAwareScrollView>
-            </View>
-          </TouchableWithoutFeedback>
-        </View>
-      </TouchableWithoutFeedback>
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
+      >
+        <TouchableWithoutFeedback onPress={onClose}>
+          <View style={sh.backdrop}>
+            <TouchableWithoutFeedback>
+              <View style={sh.sheet}>
+                <View style={sh.grab} />
+                <ScrollView
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{ paddingBottom: 40 }}
+                >
+                  {children}
+                </ScrollView>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
