@@ -1,0 +1,147 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Build APK and create GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build APK on EAS
+        id: build
+        run: |
+          # Build and capture the output to extract the APK URL
+          BUILD_OUTPUT=$(eas build \
+            --platform android \
+            --profile production \
+            --non-interactive \
+            --no-wait=false \
+            2>&1)
+          echo "$BUILD_OUTPUT"
+
+          # Extract the artifact URL from EAS CLI output
+          APK_URL=$(eas build:list \
+            --platform android \
+            --limit 1 \
+            --non-interactive \
+            --json \
+            2>/dev/null | node -e "
+              const data = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+              console.log(data[0]?.artifacts?.applicationArchiveUrl || '');
+            ")
+          echo "apk_url=$APK_URL" >> $GITHUB_OUTPUT
+          echo "APK URL: $APK_URL"
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Download APK
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          curl -L -o "timely-${VERSION}.apk" "${{ steps.build.outputs.apk_url }}"
+          echo "APK_FILE=timely-${VERSION}.apk" >> $GITHUB_ENV
+
+      - name: Extract release notes from CHANGELOG
+        id: changelog
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}   # strip the leading 'v'
+
+          # Pull the block for this version out of CHANGELOG.md
+          NOTES=$(awk \
+            "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" \
+            CHANGELOG.md)
+
+          # If nothing matched try without brackets e.g. ## [1.1.0] vs ## 1.1.0
+          if [ -z "$NOTES" ]; then
+            NOTES=$(awk \
+              "/^## ${VERSION}/{found=1; next} found && /^## /{exit} found{print}" \
+              CHANGELOG.md)
+          fi
+
+          # Fallback
+          if [ -z "$NOTES" ]; then
+            NOTES="See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details."
+          fi
+
+          # Write to a file to avoid quoting issues with multiline strings
+          echo "$NOTES" > release_notes.md
+
+      - name: Generate AI release summary with GitHub Copilot
+        id: ai_notes
+        continue-on-error: true
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          CHANGELOG_BLOCK=$(cat release_notes.md)
+
+          # Use GitHub Models (Copilot) to polish the release notes
+          PROMPT="You are writing a GitHub release description for a mobile app called Timely — a shared productivity and sync app for co-founders, flatmates, and couples. Given these raw changelog entries, write a clean, friendly release description. Keep it concise — 3 to 5 bullet points max. Start with one short sentence summarising the release theme. Do not use headers. Output plain markdown only.\n\nChangelog:\n${CHANGELOG_BLOCK}"
+
+          RESPONSE=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://models.inference.ai.azure.com/chat/completions" \
+            -d "{
+              \"model\": \"gpt-4o-mini\",
+              \"messages\": [{\"role\": \"user\", \"content\": \"${PROMPT}\"}],
+              \"max_tokens\": 400
+            }" 2>/dev/null)
+
+          AI_NOTES=$(echo "$RESPONSE" | node -e "
+            const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+            console.log(d?.choices?.[0]?.message?.content || '');
+          ")
+
+          if [ -n "$AI_NOTES" ]; then
+            echo "$AI_NOTES" > release_notes.md
+            echo "used_ai=true" >> $GITHUB_OUTPUT
+          else
+            echo "used_ai=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Append install instructions
+        run: |
+          cat >> release_notes.md << 'EOF'
+
+          ---
+
+          ## Download
+          **Android APK** — tap the `.apk` asset below to download and install directly. No app store needed.
+          > Enable **Install from unknown sources** in Android Settings → Apps → Special app access if prompted.
+
+          This app requires your own Supabase project. See the [README](https://github.com/${{ github.repository }}/blob/main/README.md) for self-hosting instructions.
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Timely ${{ github.ref_name }}
+          body_path: release_notes.md
+          files: ${{ env.APK_FILE }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
