@@ -210,23 +210,27 @@ import { Icon } from './Icon';
 function SheetShell({ visible, onClose, children }: { visible: boolean; onClose: () => void; children: React.ReactNode }) {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={{ flex: 1 }}
-      >
-        <TouchableWithoutFeedback onPress={onClose}>
-          <View style={sh.backdrop}>
-            <TouchableWithoutFeedback>
-              <View style={sh.sheet}>
-                <View style={sh.grab} />
-                <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-                  {children}
-                </ScrollView>
-              </View>
-            </TouchableWithoutFeedback>
-          </View>
-        </TouchableWithoutFeedback>
-      </KeyboardAvoidingView>
+      <TouchableWithoutFeedback onPress={onClose}>
+        <View style={sh.backdrop}>
+          <TouchableWithoutFeedback>
+            {/* KeyboardAvoidingView wraps only the sheet so it lifts with the keyboard */}
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              style={sh.sheet}
+            >
+              <View style={sh.grab} />
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                bounces
+                contentContainerStyle={{ paddingBottom: 40 }}
+              >
+                {children}
+              </ScrollView>
+            </KeyboardAvoidingView>
+          </TouchableWithoutFeedback>
+        </View>
+      </TouchableWithoutFeedback>
     </Modal>
   );
 }
@@ -1219,7 +1223,7 @@ export function DocDetailSheet() {
 
 const sh = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
-  sheet: { backgroundColor: '#fff', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 18, paddingBottom: 32, maxHeight: '85%' },
+  sheet: { backgroundColor: '#fff', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 18, paddingBottom: 0, maxHeight: '92%' },
   grab: { width: 40, height: 4, backgroundColor: colors.bgTint06, borderRadius: 2, alignSelf: 'center', marginBottom: 14 },
   sheetH: { fontWeight: '900', fontSize: 26, lineHeight: 32, letterSpacing: -0.7, color: colors.fg1 },
   monoSm: { fontFamily: 'Courier', fontSize: 10, textTransform: 'uppercase', letterSpacing: 2.2, color: colors.fg5 } as any,

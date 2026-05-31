@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.1] — 2026-05-31
+
+### Bug Fixes
+- **Sheet scroll stuck** — `KeyboardAvoidingView` was wrapping the entire Modal backdrop on Android, causing `behavior="height"` to shrink the view and lock the `ScrollView` in place. Moved `KeyboardAvoidingView` to wrap only the sheet panel itself with `behavior="padding"` on iOS only (no-op on Android where it caused the regression).
+- **Buttons hidden behind keyboard** — Add Event / Add To-do / save buttons were clipped below the visible area when the keyboard opened. Fixed by adding `paddingBottom: 40` to the `ScrollView`'s `contentContainerStyle` so content always scrolls past the bottom buttons.
+- **Sheet `maxHeight` raised** — increased from `85%` to `92%` so taller sheets (Add Event with date picker, Add Todo with subtasks) have enough room to scroll without hitting the cap immediately.
+
+### Dependencies
+- Added missing `expo-asset` peer dependency required by `expo-audio` (app could crash outside Expo Go without it)
+- Updated `expo` `56.0.4` → `~56.0.8` (SDK 56 patch)
+- Updated `expo-notifications` `56.0.13` → `~56.0.15` (SDK 56 patch)
+- All 21 `expo-doctor` checks now pass
+
 ## [1.1.0] — 2026-05-31
 
 ### Security
