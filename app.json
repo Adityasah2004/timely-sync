@@ -53,9 +53,7 @@
       }
     },
     "owner": "adityasah04",
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
+    "runtimeVersion": "1.1.0",
     "updates": {
       "url": "https://u.expo.dev/728740c4-728f-4a2f-86c7-0ffea7bf253c"
     }
