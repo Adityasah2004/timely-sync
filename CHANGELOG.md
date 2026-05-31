@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.2] — 2026-05-31
+
+### Bug Fixes
+- **Keyboard avoidance in sheets fixed (Android)** — `KeyboardAvoidingView` and `windowSoftInputMode` have no effect inside Android `Modal` windows (they only apply to the main Activity). Replaced with `react-native-keyboard-controller`'s `KeyboardAwareScrollView` which has first-class Modal support and is production-tested across all Android versions with Hermes. Sheet content now scrolls the focused input above the keyboard correctly, matching Expo Go behaviour.
+- **Placeholder text visible in production** — added explicit `placeholderTextColor` to all `TextInput` fields in sheets. Hermes (the production JS engine) renders placeholder text as invisible without an explicit colour — it defaulted to transparent on Android release builds.
+- **Duplicate Android permissions removed** — `RECORD_AUDIO`, `MODIFY_AUDIO_SETTINGS`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK` were listed twice in `app.json`.
+
+### Dependencies
+- Added `react-native-keyboard-controller` for reliable keyboard/Modal interaction on Android
+
 ## [1.1.1] — 2026-05-31
 
 ### Bug Fixes
