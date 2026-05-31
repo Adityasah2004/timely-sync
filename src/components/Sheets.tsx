@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import {
   View, Text, Modal, TouchableOpacity, TouchableWithoutFeedback,
   TextInput, ScrollView, StyleSheet, ActivityIndicator, Alert,
-  KeyboardAvoidingView, Platform,
+  Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors } from '../lib/tokens';
@@ -209,25 +210,27 @@ import { Icon } from './Icon';
 // ─── Sheet shell ────────────────────────────────────────────
 function SheetShell({ visible, onClose, children }: { visible: boolean; onClose: () => void; children: React.ReactNode }) {
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+      statusBarTranslucent
+    >
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={sh.backdrop}>
           <TouchableWithoutFeedback>
-            {/* KeyboardAvoidingView wraps only the sheet so it lifts with the keyboard */}
-            <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-              style={sh.sheet}
-            >
+            <View style={sh.sheet}>
               <View style={sh.grab} />
-              <ScrollView
+              <KeyboardAwareScrollView
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
-                bounces
+                bottomOffset={24}
                 contentContainerStyle={{ paddingBottom: 40 }}
               >
                 {children}
-              </ScrollView>
-            </KeyboardAvoidingView>
+              </KeyboardAwareScrollView>
+            </View>
           </TouchableWithoutFeedback>
         </View>
       </TouchableWithoutFeedback>
@@ -438,7 +441,7 @@ export function AddEventSheet() {
       <View style={{ gap: 10, marginTop: 18 }}>
         <View style={sh.field}>
           <Text style={sh.fieldLabel}>EVENT</Text>
-          <TextInput style={sh.fieldInput} placeholder="e.g. Lunch with parents" value={title} onChangeText={setTitle} />
+          <TextInput style={sh.fieldInput} placeholder="e.g. Lunch with parents" placeholderTextColor={colors.fg6} value={title} onChangeText={setTitle} />
         </View>
 
         {/* Date picker */}
@@ -463,16 +466,16 @@ export function AddEventSheet() {
         <View style={S.row}>
           <View style={[sh.field, { flex: 1, marginRight: 5 }]}>
             <Text style={sh.fieldLabel}>STARTS</Text>
-            <TextInput style={sh.fieldInput} value={start} onChangeText={setStart} placeholder="HH:MM" />
+            <TextInput style={sh.fieldInput} value={start} onChangeText={setStart} placeholder="HH:MM" placeholderTextColor={colors.fg6} />
           </View>
           <View style={[sh.field, { flex: 1, marginLeft: 5 }]}>
             <Text style={sh.fieldLabel}>ENDS</Text>
-            <TextInput style={sh.fieldInput} value={end} onChangeText={setEnd} placeholder="HH:MM" />
+            <TextInput style={sh.fieldInput} value={end} onChangeText={setEnd} placeholder="HH:MM" placeholderTextColor={colors.fg6} />
           </View>
         </View>
         <View style={sh.field}>
           <Text style={sh.fieldLabel}>LOCATION</Text>
-          <TextInput style={sh.fieldInput} placeholder="Optional" value={loc} onChangeText={setLoc} />
+          <TextInput style={sh.fieldInput} placeholder="Optional" placeholderTextColor={colors.fg6} value={loc} onChangeText={setLoc} />
         </View>
         <View style={sh.field}>
           <Text style={sh.fieldLabel}>WHO</Text>
@@ -652,7 +655,7 @@ export function AddTodoSheet() {
       <View style={{ gap: 10, marginTop: 18 }}>
         <View style={sh.field}>
           <Text style={sh.fieldLabel}>TO-DO</Text>
-          <TextInput style={sh.fieldInput} autoFocus placeholder="e.g. Buy fresh herbs" value={text} onChangeText={setText} />
+          <TextInput style={sh.fieldInput} autoFocus placeholder="e.g. Buy fresh herbs" placeholderTextColor={colors.fg6} value={text} onChangeText={setText} />
         </View>
         <View style={sh.field}>
           <Text style={sh.fieldLabel}>DUE</Text>
@@ -1083,7 +1086,7 @@ export function AddChannelSheet() {
       <View style={{ gap: 10, marginTop: 18 }}>
         <View style={sh.field}>
           <Text style={sh.fieldLabel}>CHANNEL NAME</Text>
-          <TextInput style={sh.fieldInput} placeholder="e.g. Design Sync" value={name} onChangeText={setName} />
+          <TextInput style={sh.fieldInput} placeholder="e.g. Design Sync" placeholderTextColor={colors.fg6} value={name} onChangeText={setName} />
         </View>
 
         <View style={sh.field}>
@@ -1114,6 +1117,7 @@ export function AddChannelSheet() {
             secureTextEntry
             style={sh.fieldInput}
             placeholder="Super secret passphrase"
+            placeholderTextColor={colors.fg6}
             value={passphrase}
             onChangeText={setPassphrase}
           />
@@ -1230,7 +1234,7 @@ const sh = StyleSheet.create({
   closeBtn: { width: 28, height: 28, borderRadius: 10, backgroundColor: colors.bgTint04, borderWidth: 1, borderColor: colors.border08, alignItems: 'center', justifyContent: 'center' },
   field: { borderWidth: 1, borderColor: colors.border12, borderRadius: 14, padding: 12, backgroundColor: '#fff', gap: 4 },
   fieldLabel: { fontFamily: 'Courier', fontSize: 9, textTransform: 'uppercase', letterSpacing: 2.2, color: colors.fg6 } as any,
-  fieldInput: { fontSize: 15, fontWeight: '500', color: colors.fg1, paddingVertical: 0 },
+  fieldInput: { fontSize: 15, fontWeight: '500', color: colors.fg1, paddingVertical: 0, paddingHorizontal: 0 },
   infoCard: { borderWidth: 1, borderColor: colors.border08, borderRadius: 18, padding: 14 },
   tagWrap: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 22, paddingHorizontal: 9, borderWidth: 1, borderColor: colors.border12, backgroundColor: colors.bgTint04, borderRadius: 9999 } as any,
   tagText: { fontFamily: 'Courier', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1.5, color: colors.fg4 } as any,

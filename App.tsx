@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { View, StatusBar, ActivityIndicator, BackHandler } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { StoreProvider, useStore } from './src/lib/store';
 import { TopBar } from './src/navigation/TopBar';
 import { TabBar } from './src/navigation/TabBar';
@@ -96,9 +97,11 @@ export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <StoreProvider>
-          <AppInner />
-        </StoreProvider>
+        <KeyboardProvider>
+          <StoreProvider>
+            <AppInner />
+          </StoreProvider>
+        </KeyboardProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
