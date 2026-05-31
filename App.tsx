@@ -15,7 +15,7 @@ import { NotificationsScreen } from './src/screens/Notifications/NotificationsSc
 import { OnboardingScreen } from './src/screens/Onboarding/OnboardingScreen';
 import { AuthScreen } from './src/screens/Auth/AuthScreen';
 import { HouseholdScreen } from './src/screens/Auth/HouseholdScreen';
-import { EventSheet, AddEventSheet, AddTodoSheet } from './src/components/Sheets';
+import { EventSheet, AddEventSheet, AddTodoSheet, TodoDetailSheet, AddChannelSheet, DocDetailSheet } from './src/components/Sheets';
 
 function AppInner() {
   const { state, dispatch } = useStore();
@@ -27,6 +27,10 @@ function AppInner() {
         dispatch({ t: 'closeModal' });
         return true;
       }
+      if (state.tab === 'chat' && state.activeChannelId !== null) {
+        dispatch({ t: 'setActiveChannel', channelId: null });
+        return true;
+      }
       if (state.tab !== 'today') {
         dispatch({ t: 'tab', tab: 'today' });
         return true;
@@ -34,7 +38,7 @@ function AppInner() {
       return false; // let the OS minimize/exit on home tab
     });
     return () => sub.remove();
-  }, [state.tab, state.modal]);
+  }, [state.tab, state.modal, state.activeChannelId]);
 
   // Splash while Supabase restores session
   if (!state.authReady) {
@@ -61,11 +65,12 @@ function AppInner() {
   }
 
   const tab = state.tab;
-
+  const showNav = !(tab === 'chat' && state.activeChannelId !== null);
+ 
   return (
     <View style={{ flex: 1, backgroundColor: '#fff' }}>
       <StatusBar barStyle="dark-content" backgroundColor="#fff" />
-      <TopBar />
+      {showNav && <TopBar />}
       <View style={{ flex: 1 }}>
         <View style={{ flex: 1, display: tab === 'today' ? 'flex' : 'none' }}><TodayScreen /></View>
         <View style={{ flex: 1, display: tab === 'plan' ? 'flex' : 'none' }}><PlanScreen /></View>
@@ -75,11 +80,14 @@ function AppInner() {
         <View style={{ flex: 1, display: tab === 'you' ? 'flex' : 'none' }}><YouScreen /></View>
         <View style={{ flex: 1, display: tab === 'notifications' ? 'flex' : 'none' }}><NotificationsScreen /></View>
       </View>
-      <TabBar />
-
+      {showNav && <TabBar />}
+ 
       <EventSheet />
       <AddEventSheet />
       <AddTodoSheet />
+      <TodoDetailSheet />
+      <AddChannelSheet />
+      <DocDetailSheet />
     </View>
   );
 }

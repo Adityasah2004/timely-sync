@@ -11,7 +11,8 @@
       },
       "env": {
         "SUPABASE_URL": "$SUPABASE_URL",
-        "SUPABASE_ANON_KEY": "$SUPABASE_ANON_KEY"
+        "SUPABASE_ANON_KEY": "$SUPABASE_ANON_KEY",
+        "EXPO_PUBLIC_GROQ_KEY": "$EXPO_PUBLIC_GROQ_KEY"
       },
       "channel": "preview"
     },
@@ -22,7 +23,8 @@
       },
       "env": {
         "SUPABASE_URL": "$SUPABASE_URL",
-        "SUPABASE_ANON_KEY": "$SUPABASE_ANON_KEY"
+        "SUPABASE_ANON_KEY": "$SUPABASE_ANON_KEY",
+        "EXPO_PUBLIC_GROQ_KEY": "$EXPO_PUBLIC_GROQ_KEY"
       },
       "channel": "production"
     }

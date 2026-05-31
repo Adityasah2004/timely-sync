@@ -42,6 +42,17 @@ export interface Todo {
   done: boolean;
   due: string;
   p: 1 | 2 | 3;
+  assignedTo?: UserId[] | null;
+  parentId?: string | null;
+}
+
+export interface ChatChannel {
+  id: string;
+  name: string;
+  createdBy: string | null;
+  members: UserId[] | null;
+  passphraseCheck: string | null;
+  createdAt?: string;
 }
 
 export interface ActivityItem {
@@ -87,6 +98,7 @@ export interface ChatMessage {
   isSystem: boolean;
   timestamp: string; // HH:MM
   createdAt?: string; // ISO date string
+  channelId?: string | null;
 }
 
 export interface DocAttachment {
@@ -115,4 +127,6 @@ export type ModalKind =
   | { kind: 'addAlarm' }
   | { kind: 'addDoc' }
   | { kind: 'doc'; doc: StartupDoc }
+  | { kind: 'todoDetail'; todo: Todo }
+  | { kind: 'addChannel' }
   | null;

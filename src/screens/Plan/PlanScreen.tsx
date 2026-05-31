@@ -18,6 +18,7 @@ function getISOWeek(d: Date): number {
 }
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
+type DayName = typeof DAYS[number];
 
 function localISODate(d: Date): string {
   const y = d.getFullYear();
@@ -26,13 +27,13 @@ function localISODate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-function buildWeekDates(): Record<string, string> {
+function buildWeekDates(weekOffset = 0): Record<DayName, string> {
   const today = new Date();
   const dow = today.getDay(); // 0=Sun
   const mondayOffset = dow === 0 ? -6 : 1 - dow;
   const monday = new Date(today);
-  monday.setDate(today.getDate() + mondayOffset);
-  const map: Record<string, string> = {};
+  monday.setDate(today.getDate() + mondayOffset + weekOffset * 7);
+  const map = {} as Record<DayName, string>;
   DAYS.forEach((d, i) => {
     const dt = new Date(monday);
     dt.setDate(monday.getDate() + i);
@@ -40,11 +41,10 @@ function buildWeekDates(): Record<string, string> {
   });
   return map;
 }
-const WEEK_ISO = buildWeekDates();
-const DAY_DATES: Record<string, number> = Object.fromEntries(
-  DAYS.map(d => [d, parseInt(WEEK_ISO[d].split('-')[2], 10)])
-);
-// Built dynamically inside component to pick up real names
+
+function isSunday(): boolean {
+  return new Date().getDay() === 0;
+}
 
 const START_MIN = 6 * 60;
 const END_MIN = 22 * 60;
@@ -65,8 +65,9 @@ function profileName(id: string, profiles: import('../../lib/store').ProfileMap)
 
 export function PlanScreen() {
   const { state, dispatch } = useStore();
-  const [day, setDay] = useState<string>(todayDayName);
+  const [day, setDay] = useState<DayName>(todayDayName as DayName);
   const [filter, setFilter] = useState<string>('ALL');
+  const [weekOffset, setWeekOffset] = useState<0 | 1>(0);
   const viewer = state.viewer;
 
   const activeSlots = USER_LIST.filter(u => state.profiles[u]);
@@ -76,8 +77,13 @@ export function PlanScreen() {
     { v: 'B',   label: 'TOGETHER' },
   ];
 
-  // state.events holds the full week from Supabase; filter by the selected day's ISO date
-  const todayName = todayDayName();
+  const sunday = isSunday();
+  const WEEK_ISO = buildWeekDates(weekOffset);
+  const DAY_DATES: Record<DayName, number> = Object.fromEntries(
+    DAYS.map(d => [d, parseInt(WEEK_ISO[d].split('-')[2], 10)])
+  ) as Record<DayName, number>;
+
+  const todayName = todayDayName() as DayName;
   const selectedIso = WEEK_ISO[day];
   const rawEvs = state.events.filter(e => e.day === selectedIso);
   const evs = rawEvs.filter(e => filter === 'ALL' || e.who === filter || e.who === 'B');
@@ -102,7 +108,7 @@ export function PlanScreen() {
   return (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 18, paddingBottom: 130 }}>
       <ScreenHeader
-        eyebrow={`PLAN · WEEK ${getISOWeek(state.clock)} · ${state.clock.toLocaleDateString('en', { month: 'short', year: '2-digit' }).toUpperCase()}`}
+        eyebrow={`PLAN · WEEK ${getISOWeek(new Date(WEEK_ISO['Mon']))} · ${new Date(WEEK_ISO['Mon']).toLocaleDateString('en', { month: 'short', year: '2-digit' }).toUpperCase()}`}
         title="The"
         ghost="shared grid."
         sub="Tap a block to open. Private events show as 'busy' to your partner."
@@ -113,20 +119,39 @@ export function PlanScreen() {
         }
       />
 
+      {/* Week switcher — only visible on Sundays */}
+      {sunday && (
+        <View style={{ flexDirection: 'row', marginBottom: 14, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: colors.border10 }}>
+          <TouchableOpacity
+            onPress={() => { setWeekOffset(0); setDay(todayName); }}
+            style={{ flex: 1, paddingVertical: 9, alignItems: 'center', backgroundColor: weekOffset === 0 ? colors.foreground : colors.bgTint02 }}
+          >
+            <Text style={{ fontFamily: 'Courier', fontSize: 9, fontWeight: '800', letterSpacing: 1.5, color: weekOffset === 0 ? '#fff' : colors.fg4 }}>THIS WEEK</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => { setWeekOffset(1); setDay('Mon'); }}
+            style={{ flex: 1, paddingVertical: 9, alignItems: 'center', backgroundColor: weekOffset === 1 ? colors.foreground : colors.bgTint02, borderLeftWidth: 1, borderLeftColor: colors.border10 }}
+          >
+            <Text style={{ fontFamily: 'Courier', fontSize: 9, fontWeight: '800', letterSpacing: 1.5, color: weekOffset === 1 ? '#fff' : colors.fg4 }}>NEXT WEEK</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Day strip */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }} contentContainerStyle={{ gap: 8 }}>
         {DAYS.map(d => {
           const active = d === day;
+          const isToday = weekOffset === 0 && d === todayName;
           return (
             <TouchableOpacity key={d} onPress={() => setDay(d)}
               style={{
                 minWidth: 52, height: 64, paddingHorizontal: 10, paddingVertical: 8,
                 borderRadius: 14, alignItems: 'center', justifyContent: 'center', gap: 4,
                 backgroundColor: active ? colors.foreground : '#fff',
-                borderWidth: 1,
-                borderColor: active ? colors.foreground : colors.border08,
+                borderWidth: isToday && !active ? 1.5 : 1,
+                borderColor: active ? colors.foreground : isToday ? colors.foreground : colors.border08,
               }}>
-              <Text style={{ fontFamily: 'Courier', fontSize: 9, textTransform: 'uppercase', letterSpacing: 1.8, color: active ? colors.fgInv4 : colors.fg6 }}>{d.toUpperCase()}</Text>
+              <Text style={{ fontFamily: 'Courier', fontSize: 9, textTransform: 'uppercase', letterSpacing: 1.8, color: active ? colors.fgInv4 : isToday ? colors.foreground : colors.fg6 }}>{d.toUpperCase()}</Text>
               <Text style={{ fontSize: 18, fontWeight: '800', letterSpacing: -0.4, color: active ? '#fff' : colors.fg2 }}>{DAY_DATES[d]}</Text>
             </TouchableOpacity>
           );

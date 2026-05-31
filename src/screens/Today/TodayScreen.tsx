@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, ScrollView, TouchableOpacity } from 'react-native';
-import { useStore } from '../../lib/store';
+import { useStore, toggleTodoItem } from '../../lib/store';
 import { colors } from '../../lib/tokens';
 import { toMins, fmtClock, fmtHM } from '../../lib/utils';
 import { USER_LIST } from '../../data/seed';
@@ -171,17 +171,37 @@ export function TodayScreen() {
       }>Shared to-dos</SecLabel>
       <Card style={{ padding: 4, marginBottom: 24 }}>
         {sharedTodos.slice(0, 4).map((td, i, arr) => (
-          <TouchableOpacity key={td.id} onPress={() => dispatch({ t: 'toggleTodo', id: td.id })}
-            style={{ flexDirection: 'row', gap: 12, alignItems: 'center', padding: 12, paddingHorizontal: 14, borderBottomWidth: i < arr.length - 1 ? 1 : 0, borderBottomColor: colors.border06 }}>
-            <View style={{ width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: td.done ? colors.foreground : colors.border20, backgroundColor: td.done ? colors.foreground : '#fff', alignItems: 'center', justifyContent: 'center' }}>
-              {td.done && <Icon name="check" size={11} color="#fff" strokeWidth={2.4} />}
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 13.5, fontWeight: '500', letterSpacing: -0.1, textDecorationLine: td.done ? 'line-through' : 'none', color: td.done ? colors.fg6 : colors.fg1 }} numberOfLines={1}>{td.text}</Text>
-              <Text style={{ fontFamily: 'Courier', fontSize: 9, letterSpacing: 1.8, textTransform: 'uppercase', color: colors.fg5, marginTop: 3 }}>DUE {td.due}</Text>
-            </View>
-            <UserChip id={td.who} />
-          </TouchableOpacity>
+          <View key={td.id}
+            style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, borderBottomWidth: i < arr.length - 1 ? 1 : 0, borderBottomColor: colors.border06 }}>
+            {/* Checkbox Touch Target */}
+            <TouchableOpacity onPress={() => toggleTodoItem(td, state, dispatch)}
+              style={{ paddingVertical: 12, paddingRight: 6 }}>
+              <View style={{ width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: td.done ? colors.foreground : colors.border20, backgroundColor: td.done ? colors.foreground : '#fff', alignItems: 'center', justifyContent: 'center' }}>
+                {td.done && <Icon name="check" size={11} color="#fff" strokeWidth={2.4} />}
+              </View>
+            </TouchableOpacity>
+
+            {/* Details Touch Target */}
+            <TouchableOpacity onPress={() => dispatch({ t: 'openTodoDetail', todo: td })}
+              style={{ flex: 1, flexDirection: 'row', gap: 12, alignItems: 'center', paddingVertical: 12, paddingLeft: 6 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 13.5, fontWeight: '500', letterSpacing: -0.1, textDecorationLine: td.done ? 'line-through' : 'none', color: td.done ? colors.fg6 : colors.fg1 }} numberOfLines={1}>{td.text}</Text>
+                <Text style={{ fontFamily: 'Courier', fontSize: 9, letterSpacing: 1.8, textTransform: 'uppercase', color: colors.fg5, marginTop: 3 }}>DUE {td.due}</Text>
+              </View>
+              {td.assignedTo && td.assignedTo.length > 0 && (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  <Text style={{ fontFamily: 'Courier', fontSize: 7, color: colors.fg5 }}>TO</Text>
+                  <View style={{ flexDirection: 'row' }}>
+                    {td.assignedTo.map((uid, idx) => (
+                      <View key={uid} style={{ marginLeft: idx > 0 ? -6 : 0, zIndex: 10 - idx }}>
+                        <UserChip id={uid} />
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
         ))}
       </Card>
 

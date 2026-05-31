@@ -42,7 +42,7 @@ export function encryptText(text: string, keyHex: string): string {
 export function decryptText(text: string, keyHex: string): string {
   if (!text) return '';
   
-  // Check if it is encrypted with our E2EE envelope
+  // Check if it is encrypted with the E2EE envelope
   if (!text.startsWith(ENVELOPE_PREFIX)) {
     return text; // Graceful backward compatibility for legacy plain text messages
   }

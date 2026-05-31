@@ -67,8 +67,20 @@ export interface DbTodo {
   is_done: boolean;
   due_label: string;
   priority: 1 | 2 | 3;
+  assigned_to: string[] | null;
+  parent_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface DbChannel {
+  id: string;
+  household_id: string;
+  name: string;
+  created_by: string | null;
+  members: string[] | null;
+  passphrase_check: string | null;
+  created_at: string;
 }
 
 export interface DbAlarm {

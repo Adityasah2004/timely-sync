@@ -10,6 +10,8 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
@@ -26,10 +28,25 @@ import { colors, radius, shadows } from '../../lib/tokens';
 import { useStore } from '../../lib/store';
 import { Icon } from '../../components/Icon';
 import { ScreenHeader, Card, Tag, Divider, IconBtn } from '../../components/Primitives';
+import { parseMarkdown } from '../../components/Sheets';
 import { supabase } from '../../lib/supabase';
 import type { StartupDoc, DocAttachment } from '../../lib/types';
 
 const DEFAULT_TAGS = ['spec', 'pitch', 'metrics', 'feedback', 'ideas', 'retro'];
+
+// Strip markdown syntax to get clean plain text
+function stripMarkdown(md: string): string {
+  return md
+    .replace(/^#{1,6}\s+/gm, '')         // headings
+    .replace(/\*{1,3}(.*?)\*{1,3}/g, '$1') // bold / italic
+    .replace(/~~(.*?)~~/g, '$1')           // strikethrough
+    .replace(/`{1,3}[^`]*`{1,3}/g, '')    // inline code / fenced
+    .replace(/^[-*+>]\s+/gm, '')          // bullets / blockquotes
+    .replace(/^\d+\.\s+/gm, '')           // ordered list
+    .replace(/^-{3,}$/gm, '')             // hr
+    .replace(/\n{2,}/g, ' ')              // collapse blank lines
+    .trim();
+}
 
 // ─── Interactive Audio Player Card (expo-audio SDK 56) ────────
 function AudioPlayerCard({ uri, name }: { uri: string; name: string }) {
@@ -90,6 +107,9 @@ export function DocsScreen() {
   const [docAttachments, setDocAttachments] = useState<DocAttachment[]>([]);
   const [saving, setSaving] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
+  const [editorMode, setEditorMode] = useState<'write' | 'preview'>('write');
+  const [aiEnhancing, setAiEnhancing] = useState(false);
+  const [prevContent, setPrevContent] = useState<string | null>(null); // for undo
 
   // Custom Tag State inside Editor
   const [newTagText, setNewTagText] = useState('');
@@ -98,11 +118,12 @@ export function DocsScreen() {
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder, 1000);
 
-  // Dynamic tags list compiling all default tags and custom ones currently in database
+  // Dynamic tags list: defaults + all saved doc tags + any tags on the doc currently being edited
   const allTags = Array.from(
     new Set([
       ...DEFAULT_TAGS,
       ...state.docs.flatMap(d => d.tags || []),
+      ...docTags,
     ])
   );
 
@@ -130,6 +151,8 @@ export function DocsScreen() {
       setDocAttachments([]);
     }
     setNewTagText('');
+    setEditorMode('write');
+    setPrevContent(null);
     setEditorOpen(true);
   };
 
@@ -169,47 +192,40 @@ export function DocsScreen() {
       setUploadingFile(true);
 
       try {
-        const response = await fetch(asset.uri);
-        const blob = await response.blob();
         const fileExt = asset.name.split('.').pop();
         const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
         const filePath = `${state.householdId}/${fileName}`;
+        const mimeType = asset.mimeType || 'application/octet-stream';
 
-        // Attempt Supabase storage upload
-        const { data, error } = await supabase.storage
+        const response = await fetch(asset.uri);
+        const arrayBuffer = await response.arrayBuffer();
+        const fileData = new Uint8Array(arrayBuffer);
+
+        const { error } = await supabase.storage
           .from('doc-attachments')
-          .upload(filePath, blob, {
-            contentType: asset.mimeType || 'application/octet-stream',
+          .upload(filePath, fileData, {
+            contentType: mimeType,
           });
 
-        let fileUri = '';
         if (error) {
-          console.warn('Supabase storage upload failed, using local URI fallback:', error);
-          fileUri = asset.uri;
-        } else {
-          const { data: { publicUrl } } = supabase.storage
-            .from('doc-attachments')
-            .getPublicUrl(filePath);
-          fileUri = publicUrl;
+          Alert.alert('Upload Failed', error.message);
+          return;
         }
 
+        const { data: { publicUrl } } = supabase.storage
+          .from('doc-attachments')
+          .getPublicUrl(filePath);
+
         const newAttachment: DocAttachment = {
           name: asset.name,
-          size: asset.size || 0,
-          mimeType: asset.mimeType || 'application/octet-stream',
-          uri: fileUri,
+          size: fileData.byteLength,
+          mimeType: mimeType,
+          uri: publicUrl,
         };
 
         setDocAttachments([...docAttachments, newAttachment]);
-      } catch (err) {
-        console.warn('File upload failed, using local URI:', err);
-        const newAttachment: DocAttachment = {
-          name: asset.name,
-          size: asset.size || 0,
-          mimeType: asset.mimeType || 'application/octet-stream',
-          uri: asset.uri,
-        };
-        setDocAttachments([...docAttachments, newAttachment]);
+      } catch (err: any) {
+        Alert.alert('Upload Failed', err?.message || String(err));
       } finally {
         setUploadingFile(false);
       }
@@ -250,46 +266,38 @@ export function DocsScreen() {
       if (uri) {
         setUploadingFile(true);
         try {
-          const response = await fetch(uri);
-          const blob = await response.blob();
           const fileName = `${Date.now()}-voice-memo.m4a`;
           const filePath = `${state.householdId}/${fileName}`;
 
-          // Upload to Supabase Storage
-          const { data, error } = await supabase.storage
+          const memoResponse = await fetch(uri);
+          const memoArrayBuffer = await memoResponse.arrayBuffer();
+          const memoData = new Uint8Array(memoArrayBuffer);
+
+          const { error } = await supabase.storage
             .from('doc-attachments')
-            .upload(filePath, blob, {
+            .upload(filePath, memoData, {
               contentType: 'audio/m4a',
             });
 
-          let fileUri = '';
           if (error) {
-            console.warn('Voice memo upload failed, fallback to local URI:', error);
-            fileUri = uri;
-          } else {
-            const { data: { publicUrl } } = supabase.storage
-              .from('doc-attachments')
-              .getPublicUrl(filePath);
-            fileUri = publicUrl;
+            Alert.alert('Upload Failed', error.message);
+            return;
           }
+
+          const { data: { publicUrl } } = supabase.storage
+            .from('doc-attachments')
+            .getPublicUrl(filePath);
 
           const newAttachment: DocAttachment = {
             name: `Voice Memo (${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })})`,
-            size: blob.size || 0,
+            size: 0,
             mimeType: 'audio/m4a',
-            uri: fileUri,
+            uri: publicUrl,
           };
 
           setDocAttachments([...docAttachments, newAttachment]);
         } catch (err) {
-          console.warn('Voice memo upload failed, local fallback:', err);
-          const newAttachment: DocAttachment = {
-            name: `Voice Memo (${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})`,
-            size: 0,
-            mimeType: 'audio/m4a',
-            uri,
-          };
-          setDocAttachments([...docAttachments, newAttachment]);
+          Alert.alert('Upload Failed', 'Could not upload voice memo to storage. Check your connection and try again.');
         } finally {
           setUploadingFile(false);
         }
@@ -300,18 +308,176 @@ export function DocsScreen() {
   };
 
   const handleOpenAttachment = async (uri: string) => {
+    if (uri.startsWith('file://')) {
+      Alert.alert('Unavailable', 'This file was cached locally and can no longer be accessed. Re-attach the file to upload it to storage.');
+      return;
+    }
     try {
-      const supported = await Linking.canOpenURL(uri);
-      if (supported) {
-        await Linking.openURL(uri);
-      } else {
-        Alert.alert('Attachment Preview', `Streaming link:\n${uri}`);
-      }
+      await Linking.openURL(uri);
     } catch (err) {
-      console.warn('Open link failed:', err);
-      Alert.alert('Attachment Preview', `Streaming link:\n${uri}`);
+      Alert.alert('Could Not Open', 'Unable to open this attachment. The link may be invalid.');
     }
   };
+
+  // ─── Smart local Markdown converter ───────────────────────
+  const convertToMarkdown = (raw: string): string => {
+    const lines = raw.split('\n');
+    const out: string[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+      const trimmed = line.trim();
+
+      if (!trimmed) { out.push(''); continue; }
+
+      // Horizontal rule: line of dashes/equals/stars (3+)
+      if (/^[-=*]{3,}$/.test(trimmed)) { out.push('---'); continue; }
+
+      // ALL CAPS line → heading (short = h2, longer = h3)
+      if (/^[A-Z0-9\s\-&:!?/]{4,}$/.test(trimmed) && trimmed === trimmed.toUpperCase() && !/^[0-9]+[.)\s]/.test(trimmed)) {
+        const level = trimmed.length <= 30 ? '## ' : '### ';
+        out.push(level + trimmed.charAt(0) + trimmed.slice(1).toLowerCase());
+        continue;
+      }
+
+      // Numbered list: `1. `, `1) `, `1- `
+      if (/^\d+[.)\-]\s+/.test(trimmed)) {
+        const match = trimmed.match(/^(\d+)[.)\-]\s+(.*)$/)!;
+        out.push(`${match[1]}. ${match[2]}`);
+        continue;
+      }
+
+      // Bullet list: -, *, •, >, →
+      if (/^[-*•>→]\s+/.test(trimmed)) {
+        out.push('• ' + trimmed.replace(/^[-*•>→]\s+/, ''));
+        continue;
+      }
+
+      // Key: value pattern → **Key**: value
+      if (/^[A-Za-z][\w\s]{1,25}:\s+\S/.test(trimmed) && !trimmed.startsWith('http')) {
+        const colonIdx = trimmed.indexOf(':');
+        const key = trimmed.slice(0, colonIdx).trim();
+        const val = trimmed.slice(colonIdx + 1).trim();
+        out.push(`**${key}**: ${val}`);
+        continue;
+      }
+
+      // Short line following a blank line that doesn't end with punctuation → subheading
+      const prevIsBlank = i > 0 && lines[i - 1].trim() === '';
+      const nextIsBlank = i < lines.length - 1 && lines[i + 1].trim() === '';
+      if (prevIsBlank && nextIsBlank && trimmed.length <= 50 && !/[.!?,;]$/.test(trimmed)) {
+        out.push('### ' + trimmed);
+        continue;
+      }
+
+      out.push(line);
+    }
+
+    // Collapse 3+ consecutive blank lines to 2
+    return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  };
+
+  // ─── Groq AI enhancement (Llama via Groq cloud) ─────────────
+  const enhanceWithAI = async () => {
+    if (!docContent.trim()) return;
+    const groqKey = process.env.EXPO_PUBLIC_GROQ_KEY;
+    if (!groqKey) {
+      Alert.alert(
+        'Groq Key Missing',
+        'Add EXPO_PUBLIC_GROQ_KEY to your .env file.\n\nGet a free key at console.groq.com — no credit card needed.',
+      );
+      return;
+    }
+
+    setPrevContent(docContent);
+    setAiEnhancing(true);
+
+    const systemPrompt = `You are an expert technical writer and document architect for a startup co-founder productivity app. Your job is to take raw, unstructured text and transform it into a beautifully formatted, professional markdown document.
+
+RULES:
+1. RESTRUCTURE the content — don't just add markdown symbols. Reorganise ideas into logical sections.
+2. Add a clear ## Title at the top based on the content's theme.
+3. Group related ideas under descriptive ### Section Headings.
+4. Convert rambling sentences into tight, scannable bullet points where appropriate.
+5. Use **bold** for key terms, metrics, names, and important decisions.
+6. Use --- to visually separate major sections.
+7. Use > blockquotes for key insights, decisions, or notable quotes.
+8. Use numbered lists for steps, priorities, or sequences.
+9. Fix grammar and spelling. Improve clarity. Trim filler words.
+10. Preserve ALL factual content, numbers, names, and dates — never invent or omit data.
+11. Return ONLY the formatted markdown. No preamble, no explanation, no code fences around the whole output.`;
+
+    const userPrompt = `Restructure and reformat the following text into a clean, professional markdown document:\n\n${docContent}`;
+
+
+    // Primary: llama-3.1-8b-instant (fastest), fallback: llama3-70b-8192
+    const models = ['llama-3.1-8b-instant', 'llama3-70b-8192'];
+    const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+    const callGroq = async (model: string): Promise<string> => {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${groqKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.2,
+          max_tokens: 2048,
+        }),
+      });
+
+      if (res.status === 429) throw new Error('RATE_LIMIT');
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error?.message || `Groq error ${res.status}`);
+      }
+
+      const data = await res.json();
+      const text = data?.choices?.[0]?.message?.content;
+      if (!text) throw new Error('No content returned');
+      return text;
+    };
+
+    try {
+      let markdown: string | null = null;
+
+      for (const model of models) {
+        try {
+          markdown = await callGroq(model);
+          break;
+        } catch (e: any) {
+          if (e.message === 'RATE_LIMIT' && model !== models[models.length - 1]) {
+            await sleep(1000);
+            continue;
+          }
+          throw e;
+        }
+      }
+
+      if (markdown) {
+        setDocContent(markdown.trim());
+        setEditorMode('preview');
+      }
+    } catch (err: any) {
+      if (err?.message === 'RATE_LIMIT') {
+        Alert.alert(
+          'Rate Limited',
+          'Groq quota hit. Wait a few seconds and try again, or use SMART FORMAT for instant offline conversion.',
+        );
+      } else {
+        Alert.alert('AI Enhancement Failed', err?.message || 'Could not reach Groq. Try SMART FORMAT instead.');
+      }
+    } finally {
+      setAiEnhancing(false);
+    }
+  };
+
 
   const handleSave = async () => {
     if (!docTitle.trim() || !docContent.trim()) {
@@ -459,30 +625,50 @@ export function DocsScreen() {
             const attCount = doc.attachments?.length || 0;
 
             return (
-              <TouchableOpacity key={doc.id} style={dc.docCard} onPress={() => openEditor(doc)}>
+              <TouchableOpacity key={doc.id} style={dc.docCard} activeOpacity={1} onPress={() => openEditor(doc)}>
                 <Card tight>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Text style={dc.docTitle} numberOfLines={1}>
+                  {/* Title + date row */}
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                    <Text style={dc.docTitle} numberOfLines={2}>
                       {doc.title}
                     </Text>
                     <Text style={dc.docDate}>{dateStr}</Text>
                   </View>
-                  <Text style={dc.docExcerpt} numberOfLines={3}>
-                    {doc.content}
-                  </Text>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10, alignItems: 'center' }}>
-                    {doc.tags.map(t => (
-                      <Tag key={t} ghost>
-                        <Text style={dc.docTagText}>#{t}</Text>
-                      </Tag>
-                    ))}
-                    {attCount > 0 && (
-                      <View style={dc.cardAttBadge}>
-                        <Icon name="note" size={10} color={colors.fg4} />
-                        <Text style={dc.cardAttBadgeText}>{attCount} file{attCount > 1 ? 's' : ''}</Text>
-                      </View>
-                    )}
-                  </View>
+
+                  {/* Attachments row — individual filename chips */}
+                  {attCount > 0 && (
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      style={{ marginTop: 10 }}
+                      contentContainerStyle={{ gap: 6 }}
+                    >
+                      {doc.attachments!.map((att, i) => (
+                        <View key={i} style={dc.attChip}>
+                          <Icon name="note" size={10} color={colors.fg4} />
+                          <Text style={dc.attChipText} numberOfLines={1}>
+                            {att.name}
+                          </Text>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  )}
+
+                  {/* Tags row */}
+                  {doc.tags.length > 0 && (
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      style={{ marginTop: 10 }}
+                      contentContainerStyle={{ gap: 6 }}
+                    >
+                      {doc.tags.map(t => (
+                        <View key={t} style={dc.tagBadge}>
+                          <Text style={dc.tagBadgeText}>#{t.toUpperCase()}</Text>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  )}
                 </Card>
               </TouchableOpacity>
             );
@@ -492,7 +678,11 @@ export function DocsScreen() {
 
       {/* Full Page Spec Editor Modal */}
       <Modal animationType="slide" visible={editorOpen} onRequestClose={() => setEditorOpen(false)}>
-        <View style={[dc.modalContainer, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}
+        >
+          <View style={[dc.modalContainer, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
           <View style={dc.modalHeader}>
             <IconBtn onPress={() => setEditorOpen(false)}>
               <Icon name="x" size={16} />
@@ -501,7 +691,7 @@ export function DocsScreen() {
             <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
               {editingDoc && (
                 <IconBtn onPress={() => handleDelete(editingDoc.id)}>
-                  <Icon name="reset" size={14} color={colors.destructive} />
+                  <Icon name="trash" size={14} color={colors.destructive} />
                 </IconBtn>
               )}
               <TouchableOpacity style={dc.saveBtn} onPress={handleSave} disabled={saving}>
@@ -640,18 +830,95 @@ export function DocsScreen() {
 
             <Divider />
 
-            <Text style={dc.inputLabel}>Content / Specification Draft</Text>
-            <TextInput
-              style={dc.contentInput}
-              placeholder="Draft your pitch deck outline, metrics target, features lists or meeting takeaways here..."
-              placeholderTextColor={colors.fg6}
-              multiline
-              textAlignVertical="top"
-              value={docContent}
-              onChangeText={setDocContent}
-            />
+            {/* Content Editor with live markdown preview */}
+            <View style={dc.editorHeader}>
+              <Text style={dc.inputLabel}>Content / Specification Draft</Text>
+              <View style={dc.modeTabs}>
+                <TouchableOpacity
+                  style={[dc.modeTab, editorMode === 'write' && dc.modeTabActive]}
+                  onPress={() => setEditorMode('write')}
+                >
+                  <Text style={[dc.modeTabText, editorMode === 'write' && dc.modeTabTextActive]}>WRITE</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[dc.modeTab, editorMode === 'preview' && dc.modeTabActive]}
+                  onPress={() => setEditorMode('preview')}
+                >
+                  <Text style={[dc.modeTabText, editorMode === 'preview' && dc.modeTabTextActive]}>PREVIEW</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {editorMode === 'write' ? (
+              <>
+                {/* Format toolbar */}
+                <View style={dc.formatBar}>
+                  <Text style={dc.formatBarLabel}>FORMAT</Text>
+                  <View style={dc.formatBarBtns}>
+                    <TouchableOpacity
+                      style={dc.formatBtn}
+                      onPress={() => {
+                        if (!docContent.trim()) return;
+                        setPrevContent(docContent);
+                        setDocContent(convertToMarkdown(docContent));
+                        setEditorMode('preview');
+                      }}
+                    >
+                      <Icon name="bolt" size={11} color={colors.foreground} />
+                      <Text style={dc.formatBtnText}>SMART FORMAT</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[dc.formatBtn, dc.formatBtnAI, aiEnhancing && { opacity: 0.6 }]}
+                      onPress={enhanceWithAI}
+                      disabled={aiEnhancing}
+                    >
+                      {aiEnhancing ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : (
+                        <Icon name="bolt" size={11} color="#fff" />
+                      )}
+                      <Text style={[dc.formatBtnText, { color: '#fff' }]}>
+                        {aiEnhancing ? 'ENHANCING...' : 'ENHANCE WITH AI'}
+                      </Text>
+                    </TouchableOpacity>
+
+                    {prevContent !== null && (
+                      <TouchableOpacity
+                        style={dc.formatBtnUndo}
+                        onPress={() => { setDocContent(prevContent!); setPrevContent(null); }}
+                      >
+                        <Icon name="reset" size={11} color={colors.fg2} />
+                        <Text style={[dc.formatBtnText, { color: colors.fg2 }]}>UNDO</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </View>
+
+                <TextInput
+                  style={dc.contentInput}
+                  placeholder={`Paste or type content here.\nUse SMART FORMAT to auto-detect structure.\nSupports **bold**, *italic*, \`code\`, # Heading...`}
+                  placeholderTextColor={colors.fg6}
+                  multiline
+                  textAlignVertical="top"
+                  value={docContent}
+                  onChangeText={setDocContent}
+                  autoCorrect={false}
+                  autoCapitalize="none"
+                />
+              </>
+            ) : (
+              <View style={dc.previewContainer}>
+                {docContent.trim() ? (
+                  parseMarkdown(docContent, { fontSize: 14.5, lineHeight: 22, color: colors.foreground })
+                ) : (
+                  <Text style={dc.previewEmpty}>Nothing to preview yet. Switch to WRITE and start typing.</Text>
+                )}
+              </View>
+            )}
           </ScrollView>
         </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -756,6 +1023,40 @@ const dc = StyleSheet.create({
     fontSize: 9,
     fontWeight: '700',
     color: colors.fg5,
+  },
+  tagBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 20,
+    backgroundColor: colors.bgTint04,
+    borderWidth: 1,
+    borderColor: colors.border10,
+  },
+  tagBadgeText: {
+    fontFamily: 'Courier',
+    fontSize: 9,
+    fontWeight: '800',
+    color: colors.fg4,
+    letterSpacing: 0.5,
+  },
+  attChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: colors.bgTint02,
+    borderWidth: 1,
+    borderColor: colors.border08,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    maxWidth: 180,
+  },
+  attChipText: {
+    fontFamily: 'Courier',
+    fontSize: 9,
+    fontWeight: '600',
+    color: colors.fg4,
+    flexShrink: 1,
   },
   cardAttBadge: {
     flexDirection: 'row',
@@ -1049,5 +1350,109 @@ const dc = StyleSheet.create({
     color: colors.foreground,
     minHeight: 300,
     paddingBottom: 40,
+    fontFamily: 'Courier',
+  },
+  editorHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  modeTabs: {
+    flexDirection: 'row',
+    backgroundColor: colors.bgTint04,
+    borderRadius: radius.md,
+    padding: 2,
+    borderWidth: 1,
+    borderColor: colors.border08,
+  },
+  modeTab: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: radius.md - 2,
+  },
+  modeTabActive: {
+    backgroundColor: colors.foreground,
+  },
+  modeTabText: {
+    fontFamily: 'Courier',
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.fg4,
+    letterSpacing: 0.5,
+  },
+  modeTabTextActive: {
+    color: '#fff',
+  },
+  previewContainer: {
+    minHeight: 300,
+    paddingBottom: 40,
+    paddingTop: 4,
+  },
+  previewEmpty: {
+    fontSize: 14,
+    lineHeight: 22,
+    color: colors.fg6,
+    fontStyle: 'italic',
+  },
+  formatBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.bgTint02,
+    borderWidth: 1,
+    borderColor: colors.border08,
+    borderRadius: radius.md,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    marginBottom: 8,
+    gap: 8,
+  },
+  formatBarLabel: {
+    fontFamily: 'Courier',
+    fontSize: 9,
+    fontWeight: '800',
+    color: colors.fg6,
+    letterSpacing: 1,
+  },
+  formatBarBtns: {
+    flexDirection: 'row',
+    gap: 6,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    flex: 1,
+  },
+  formatBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.md,
+    backgroundColor: colors.bgTint04,
+    borderWidth: 1,
+    borderColor: colors.border10,
+  },
+  formatBtnAI: {
+    backgroundColor: colors.foreground,
+    borderColor: colors.foreground,
+  },
+  formatBtnUndo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.md,
+    backgroundColor: colors.bgTint02,
+    borderWidth: 1,
+    borderColor: colors.border08,
+  },
+  formatBtnText: {
+    fontFamily: 'Courier',
+    fontSize: 9,
+    fontWeight: '800',
+    color: colors.foreground,
+    letterSpacing: 0.5,
   },
 });

@@ -7,7 +7,8 @@ export type IconName =
   | 'chev' | 'chevDown' | 'chevUp' | 'chevLeft' | 'play' | 'pause' | 'reset'
   | 'check' | 'x' | 'sun' | 'moon' | 'pin' | 'run' | 'cart' | 'coffee'
   | 'settings' | 'bolt' | 'flag' | 'headphones' | 'lock' | 'unlock' | 'eye'
-  | 'eyeOff' | 'dots' | 'search' | 'repeat' | 'note' | 'book' | 'message';
+  | 'eyeOff' | 'dots' | 'search' | 'repeat' | 'note' | 'book' | 'message'
+  | 'trash';
 
 interface IconProps {
   name: IconName;
@@ -63,6 +64,7 @@ export function Icon({ name, size = 18, color = colors.fg1, strokeWidth = 1.6 }:
     note:       <><Path {...props} d="M4 5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5z"/><Path {...props} d="M13 3v5h5M8 13h8M8 17h5"/></>,
     book:       <><Path {...props} d="M4 4h7a4 4 0 0 1 4 4v12H8a4 4 0 0 1-4-4V4z"/><Path {...props} d="M20 4h-5a4 4 0 0 0-4 4v12h5a4 4 0 0 0 4-4V4z"/></>,
     message:    <Path {...props} d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>,
+    trash:      <><Path {...props} d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/><Path {...props} d="M10 11v5M14 11v5"/></>,
   };
 
   return (

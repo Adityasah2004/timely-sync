@@ -1,12 +1,14 @@
 import React, { createContext, useContext, useReducer, useEffect, useCallback } from 'react';
+import { Alert } from 'react-native';
 import type { Session } from '@supabase/supabase-js';
-import type { UserId, CalEvent, Alarm, Todo, ModalKind, TabName, ActivityItem, Notification, FocusSession, ChatMessage, StartupDoc } from './types';
+import type { UserId, CalEvent, Alarm, Todo, ModalKind, TabName, ActivityItem, Notification, FocusSession, ChatMessage, StartupDoc, ChatChannel } from './types';
 import { USER_SLOTS } from './types';
 import { supabase } from './supabase';
 import type { DbNotification } from './supabase';
 import { useRealtime } from './useRealtime';
 
 export interface ProfileInfo {
+  id?: string;
   displayName: string;
   shortId: UserId;
   roleLabel: string;
@@ -35,6 +37,8 @@ interface AppState {
   householdId: string | null;
   authReady: boolean;
   profiles: ProfileMap;
+  channels: ChatChannel[];
+  activeChannelId: string | null;
 }
 
 type Action =
@@ -44,6 +48,7 @@ type Action =
   | { t: 'openAdd' }
   | { t: 'openNewAlarm' }
   | { t: 'openNewTodo' }
+  | { t: 'openTodoDetail'; todo: Todo }
   | { t: 'openNewDoc' }
   | { t: 'openDoc'; doc: StartupDoc }
   | { t: 'closeModal' }
@@ -67,7 +72,10 @@ type Action =
   | { t: 'setMessages'; messages: ChatMessage[] }
   | { t: 'setDocs'; docs: StartupDoc[] }
   | { t: 'markNotifRead'; id: string }
-  | { t: 'setProfiles'; profiles: ProfileMap };
+  | { t: 'setProfiles'; profiles: ProfileMap }
+  | { t: 'setChannels'; channels: ChatChannel[] }
+  | { t: 'setActiveChannel'; channelId: string | null }
+  | { t: 'openNewChannel' };
 
 const INITIAL_STATE: AppState = {
   tab: 'today',
@@ -88,16 +96,19 @@ const INITIAL_STATE: AppState = {
   householdId: null,
   authReady: false,
   profiles: {},
+  channels: [],
+  activeChannelId: null,
 };
 
 function reducer(s: AppState, a: Action): AppState {
   switch (a.t) {
-    case 'tab':           return { ...s, tab: a.tab, modal: null };
+    case 'tab':           return { ...s, tab: a.tab, modal: null, activeChannelId: null };
     case 'setViewer':     return { ...s, viewer: a.u };
     case 'openEvent':     return { ...s, modal: { kind: 'event', ev: a.ev } };
     case 'openAdd':       return { ...s, modal: { kind: 'addEvent' } };
     case 'openNewAlarm':  return { ...s, modal: { kind: 'addAlarm' } };
     case 'openNewTodo':   return { ...s, modal: { kind: 'addTodo' } };
+    case 'openTodoDetail': return { ...s, modal: { kind: 'todoDetail', todo: a.todo } };
     case 'openNewDoc':    return { ...s, modal: { kind: 'addDoc' } };
     case 'openDoc':       return { ...s, modal: { kind: 'doc', doc: a.doc } };
     case 'closeModal':    return { ...s, modal: null };
@@ -128,11 +139,29 @@ function reducer(s: AppState, a: Action): AppState {
     case 'setAlarms':          return { ...s, alarms: a.alarms };
     case 'setActivity':        return { ...s, activity: a.activity };
     case 'setNotifications':   return { ...s, notifications: a.notifications };
-    case 'setFocusSessions':   return { ...s, focusSessions: a.sessions };
+    case 'setFocusSessions': {
+      const mapped = a.sessions.map((fs: any) => {
+        const match = Object.entries(s.profiles).find(([_, prof]) => prof.id === fs.owner_id);
+        const ownerSlot = match ? (match[0] as UserId) : '1';
+        return {
+          id: fs.id,
+          ownerId: fs.owner_id,
+          ownerSlot,
+          label: fs.label,
+          durationMin: fs.duration_min,
+          startedAt: fs.started_at,
+          endedAt: fs.ended_at,
+        };
+      });
+      return { ...s, focusSessions: mapped };
+    }
     case 'setMessages':        return { ...s, messages: a.messages };
     case 'setDocs':            return { ...s, docs: a.docs };
     case 'markNotifRead':      return { ...s, notifications: s.notifications.map(n => n.id === a.id ? { ...n, read: true } : n) };
     case 'setProfiles':        return { ...s, profiles: a.profiles };
+    case 'setChannels':        return { ...s, channels: a.channels };
+    case 'setActiveChannel':   return { ...s, activeChannelId: a.channelId };
+    case 'openNewChannel':     return { ...s, modal: { kind: 'addChannel' } };
     default: return s;
   }
 }
@@ -189,8 +218,10 @@ function RealtimeBridge({ householdId, dispatch, refreshRef }: { householdId: st
   const onNotifications = useCallback((ns: DbNotification[])  => dispatch({ t: 'setNotifications', notifications: ns.map(dbNotif) }), [dispatch]);
   const onMessages      = useCallback((msgs: ChatMessage[])   => dispatch({ t: 'setMessages',       messages: msgs }),      [dispatch]);
   const onDocs          = useCallback((docs: StartupDoc[])   => dispatch({ t: 'setDocs',           docs: docs }),          [dispatch]);
+  const onChannels      = useCallback((chans: ChatChannel[])  => dispatch({ t: 'setChannels',      channels: chans }),     [dispatch]);
+  const onFocusSessions = useCallback((sessions: any[])      => dispatch({ t: 'setFocusSessions', sessions }),           [dispatch]);
 
-  const { refresh } = useRealtime({ householdId, onEvents, onTodos, onAlarms, onActivity, onNotifications, onMessages, onDocs });
+  const { refresh } = useRealtime({ householdId, onEvents, onTodos, onAlarms, onActivity, onNotifications, onMessages, onDocs, onChannels, onFocusSessions });
   refreshRef.current = refresh;
   return null;
 }
@@ -238,13 +269,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         dispatch({ t: 'setViewer', u: me.short_id as UserId });
         return supabase
           .from('profiles')
-          .select('short_id, display_name, role_label, tagline, preferences')
+          .select('id, short_id, display_name, role_label, tagline, preferences')
           .eq('household_id', me.household_id)
           .then(({ data: all }) => {
             if (!all) return;
             const map: ProfileMap = {};
-            all.forEach((p: { short_id: string; display_name: string; role_label: string | null; tagline: string | null; preferences: Record<string, string> | null }) => {
+            all.forEach((p: { id: string; short_id: string; display_name: string; role_label: string | null; tagline: string | null; preferences: Record<string, string> | null }) => {
               map[p.short_id as UserId] = {
+                id:           p.id,
                 displayName:  p.display_name,
                 shortId:      p.short_id as UserId,
                 roleLabel:    p.role_label ?? '',
@@ -257,23 +289,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       });
   }, [state.userId]);
 
-  // Persist todo toggles to Supabase
-  const prevTodos = React.useRef(state.todos);
-  useEffect(() => {
-    if (!state.householdId) { prevTodos.current = state.todos; return; }
-    const prev = prevTodos.current;
-    state.todos.forEach(td => {
-      const old = prev.find(p => p.id === td.id);
-      if (old && old.done !== td.done) {
-        supabase.from('todos').update({ is_done: td.done }).eq('id', td.id);
-        if (state.userId && state.householdId) {
-          writeActivity(state.householdId, state.userId, state.viewer,
-            td.done ? 'completed' : 'unchecked', td.text, 'todo');
-        }
-      }
-    });
-    prevTodos.current = state.todos;
-  }, [state.todos]);
+
 
   // Persist alarm toggles to Supabase
   const prevAlarms = React.useRef(state.alarms);
@@ -309,4 +325,43 @@ export function useRefresh() {
   const ctx = useContext(StoreContext);
   if (!ctx) throw new Error('useRefresh must be inside StoreProvider');
   return ctx.refresh;
+}
+
+export async function toggleTodoItem(
+  todo: Todo,
+  state: any,
+  dispatch: React.Dispatch<any>
+) {
+  const nextDone = !todo.done;
+
+  // Prevent parent task completion if there are uncompleted subtasks
+  if (!todo.parentId && nextDone) {
+    const subtasks = (state.todos || []).filter((t: Todo) => t.parentId === todo.id);
+    const hasUncompleted = subtasks.some((t: Todo) => !t.done);
+    if (hasUncompleted) {
+      Alert.alert(
+        "Outstanding Subtasks",
+        "You must complete all subtasks before completing the main task."
+      );
+      return;
+    }
+  }
+
+  // Optimistically toggle locally for instant responsive feel
+  dispatch({ t: 'toggleTodo', id: todo.id });
+  
+  // Persist to Supabase
+  await supabase.from('todos').update({ is_done: nextDone }).eq('id', todo.id);
+  
+  // Log activity
+  if (state.userId && state.householdId) {
+    await writeActivity(
+      state.householdId,
+      state.userId,
+      state.viewer,
+      nextDone ? 'completed' : 'unchecked',
+      todo.text,
+      'todo'
+    );
+  }
 }

@@ -13,16 +13,19 @@ CREATE TABLE IF NOT EXISTS docs (
   updated_at   timestamptz NOT NULL DEFAULT now()
 );
 
--- Timestamps auto-update trigger (touch_updated_at is defined in initial schema)
-CREATE TRIGGER docs_updated_at BEFORE UPDATE ON docs FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE OR REPLACE TRIGGER docs_updated_at
+  BEFORE UPDATE ON docs
+  FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 
--- Row-Level Security
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "docs: household" ON docs;
+
 CREATE POLICY "docs: household"
-  ON docs FOR ALL TO authenticated
+  ON docs FOR ALL TO anon, authenticated
   USING     (household_id = get_my_household_id())
   WITH CHECK (household_id = get_my_household_id());
 
--- Enable Realtime
-ALTER PUBLICATION supabase_realtime ADD TABLE docs;
+DO $$ BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE docs;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;

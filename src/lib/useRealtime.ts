@@ -1,7 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import { supabase } from './supabase';
-import type { DbEvent, DbTodo, DbAlarm, DbActivity, DbNotification } from './supabase';
-import type { UserId, CalEvent, Todo, Alarm, ActivityItem, ChatMessage, StartupDoc } from './types';
+import type { DbEvent, DbTodo, DbAlarm, DbActivity, DbNotification, DbChannel } from './supabase';
+import type { UserId, CalEvent, Todo, Alarm, ActivityItem, ChatMessage, StartupDoc, ChatChannel } from './types';
 
 interface DbMessage {
   id: string;
@@ -10,6 +10,7 @@ interface DbMessage {
   sender_short: string;
   content: string;
   is_system: boolean;
+  channel_id: string | null;
   created_at: string;
 }
 
@@ -49,6 +50,8 @@ function dbTodo(r: DbTodo): Todo {
     done: r.is_done,
     due: r.due_label,
     p: r.priority as 1 | 2 | 3,
+    assignedTo: Array.isArray(r.assigned_to) && r.assigned_to.length > 0 ? r.assigned_to as UserId[] : null,
+    parentId: r.parent_id,
   };
 }
 
@@ -71,7 +74,19 @@ function dbMessage(r: DbMessage): ChatMessage {
     senderShort: r.sender_short as UserId | 'S',
     content: r.content,
     isSystem: r.is_system,
+    channelId: r.channel_id,
     timestamp: new Date(r.created_at).toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', hour12: false }),
+    createdAt: r.created_at,
+  };
+}
+
+function dbChannel(r: DbChannel): ChatChannel {
+  return {
+    id: r.id,
+    name: r.name,
+    createdBy: r.created_by,
+    members: Array.isArray(r.members) && r.members.length > 0 ? r.members as UserId[] : null,
+    passphraseCheck: r.passphrase_check,
     createdAt: r.created_at,
   };
 }
@@ -99,6 +114,8 @@ interface RealtimeCallbacks {
   onNotifications: (n: DbNotification[]) => void;
   onMessages:      (msgs: ChatMessage[]) => void;
   onDocs:          (docs: StartupDoc[]) => void;
+  onChannels:      (chans: ChatChannel[]) => void;
+  onFocusSessions: (sessions: any[]) => void;
 }
 
 // Returns Mon and Sun ISO dates for the week containing `date`
@@ -119,20 +136,30 @@ function weekRange(date: Date): { from: string; to: string } {
   return { from: fmt(mon), to: fmt(sun) };
 }
 
-export function useRealtime({ householdId, onEvents, onTodos, onAlarms, onActivity, onNotifications, onMessages, onDocs }: RealtimeCallbacks): { refresh: () => Promise<void> } {
+export function useRealtime({ householdId, onEvents, onTodos, onAlarms, onActivity, onNotifications, onMessages, onDocs, onChannels, onFocusSessions }: RealtimeCallbacks): { refresh: () => Promise<void> } {
   const fetchAll = useCallback(async () => {
     if (!householdId) return;
 
-    const { from, to } = weekRange(new Date());
+    // Always fetch a 14-day rolling window so planned-ahead events are visible
+    const today = new Date();
+    const fmt = (d: Date) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+    const from = fmt(today);
+    const future = new Date(today);
+    future.setDate(today.getDate() + 13);
+    const toDate = fmt(future);
 
-    const [{ data: evs }, { data: todos }, { data: alarms }, { data: acts }, { data: notifs }, { data: msgs }, { data: docs }] = await Promise.all([
-      // Fetch entire current week's events
+    const [{ data: evs }, { data: todos }, { data: alarms }, { data: acts }, { data: notifs }, { data: msgs }, { data: docs }, { data: chans }, { data: focuses }] = await Promise.all([
       supabase
         .from('events')
         .select('*')
         .eq('household_id', householdId)
         .gte('event_date', from)
-        .lte('event_date', to)
+        .lte('event_date', toDate)
         .order('start_time'),
       supabase
         .from('todos')
@@ -167,6 +194,16 @@ export function useRealtime({ householdId, onEvents, onTodos, onAlarms, onActivi
         .select('*')
         .eq('household_id', householdId)
         .order('updated_at', { ascending: false }),
+      supabase
+        .from('channels')
+        .select('*')
+        .eq('household_id', householdId)
+        .order('created_at'),
+      supabase
+        .from('focus_sessions')
+        .select('*')
+        .eq('household_id', householdId)
+        .order('started_at', { ascending: false }),
     ]);
 
     if (evs)    onEvents(evs.map(dbEvent));
@@ -182,6 +219,8 @@ export function useRealtime({ householdId, onEvents, onTodos, onAlarms, onActivi
     if (notifs) onNotifications(notifs as DbNotification[]);
     if (msgs)   onMessages(msgs.map(dbMessage));
     if (docs)   onDocs(docs.map(dbDoc));
+    if (chans)  onChannels(chans.map(dbChannel));
+    if (focuses) onFocusSessions(focuses);
   }, [householdId]);
 
   useEffect(() => {
@@ -190,13 +229,15 @@ export function useRealtime({ householdId, onEvents, onTodos, onAlarms, onActivi
 
     const channel = supabase
       .channel(`household:${householdId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'events',        filter: `household_id=eq.${householdId}` }, fetchAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'todos',         filter: `household_id=eq.${householdId}` }, fetchAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'alarms',        filter: `household_id=eq.${householdId}` }, fetchAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'activity',      filter: `household_id=eq.${householdId}` }, fetchAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `household_id=eq.${householdId}` }, fetchAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages',      filter: `household_id=eq.${householdId}` }, fetchAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'docs',          filter: `household_id=eq.${householdId}` }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'events',         filter: `household_id=eq.${householdId}` }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'todos',          filter: `household_id=eq.${householdId}` }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'alarms',         filter: `household_id=eq.${householdId}` }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'activity',       filter: `household_id=eq.${householdId}` }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications',  filter: `household_id=eq.${householdId}` }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages',       filter: `household_id=eq.${householdId}` }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'docs',           filter: `household_id=eq.${householdId}` }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'channels',       filter: `household_id=eq.${householdId}` }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'focus_sessions', filter: `household_id=eq.${householdId}` }, fetchAll)
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };

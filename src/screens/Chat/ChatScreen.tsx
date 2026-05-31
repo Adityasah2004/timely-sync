@@ -10,16 +10,69 @@ import {
   Platform,
   ActivityIndicator,
   Keyboard,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
 import { colors, radius, shadows, SLOT_COLORS } from '../../lib/tokens';
 import { useStore } from '../../lib/store';
 import { Icon } from '../../components/Icon';
-import { ScreenHeader, UserChip, Card } from '../../components/Primitives';
+import { ScreenHeader, UserChip, Card, SecLabel, Divider, styles } from '../../components/Primitives';
 import { supabase } from '../../lib/supabase';
 import { deriveKey, encryptText, decryptText } from '../../lib/crypto';
-import type { UserId } from '../../lib/types';
+import type { UserId, ChatChannel } from '../../lib/types';
+
+export function parseMarkdown(text: string, baseStyle: any = {}): React.ReactNode[] {
+  if (!text) return [];
+  
+  // Split by lines to handle block-level styling like headings
+  const lines = text.split('\n');
+  
+  return lines.map((line, lineIdx) => {
+    let lineStyle = Array.isArray(baseStyle) ? [...baseStyle] : [baseStyle];
+    let cleanLine = line;
+    
+    // Check for headings
+    if (line.startsWith('### ')) {
+      lineStyle = [...lineStyle, { fontSize: 15, fontWeight: '800', marginVertical: 4 }];
+      cleanLine = line.slice(4);
+    } else if (line.startsWith('## ')) {
+      lineStyle = [...lineStyle, { fontSize: 17, fontWeight: '900', marginVertical: 6 }];
+      cleanLine = line.slice(3);
+    } else if (line.startsWith('# ')) {
+      lineStyle = [...lineStyle, { fontSize: 20, fontWeight: '900', marginVertical: 8 }];
+      cleanLine = line.slice(2);
+    }
+    
+    // Parse inline markdown tokens inside this line
+    const inlineRegex = /(\*\*.*?\*\*|\*.*?\*|_.*?_|`.*?`)/g;
+    const parts = cleanLine.split(inlineRegex);
+    const parsedLine = parts.map((part, idx) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <Text key={`inline-${idx}`} style={[lineStyle, { fontWeight: '800' }]}>{part.slice(2, -2)}</Text>;
+      }
+      if ((part.startsWith('*') && part.endsWith('*')) || (part.startsWith('_') && part.endsWith('_'))) {
+        return <Text key={`inline-${idx}`} style={[lineStyle, { fontStyle: 'italic' }]}>{part.slice(1, -1)}</Text>;
+      }
+      if (part.startsWith('`') && part.endsWith('`')) {
+        return (
+          <Text key={`inline-${idx}`} style={[lineStyle, { fontFamily: 'Courier', fontSize: 12, backgroundColor: 'rgba(0,0,0,0.06)', paddingHorizontal: 3, borderRadius: 4 }]}>
+            {part.slice(1, -1)}
+          </Text>
+        );
+      }
+      return <Text key={`inline-${idx}`} style={lineStyle}>{part}</Text>;
+    });
+    
+    // Return the line as a nested Text component with a line break at the end (except last line)
+    return (
+      <Text key={`line-${lineIdx}`}>
+        {parsedLine}
+        {lineIdx < lines.length - 1 ? '\n' : ''}
+      </Text>
+    );
+  });
+}
 
 function getFriendlyDateLabel(createdAt?: string): string {
   if (!createdAt) return 'TODAY';
@@ -47,8 +100,9 @@ function getFriendlyDateLabel(createdAt?: string): string {
 }
 
 export function ChatScreen() {
-  const { state } = useStore();
+  const { state, dispatch } = useStore();
   const insets = useSafeAreaInsets();
+  
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
@@ -59,61 +113,135 @@ export function ChatScreen() {
   const [showCommands, setShowCommands] = useState(false);
   const [showMentions, setShowMentions] = useState(false);
   const [mentionSearch, setMentionSearch] = useState('');
+  const [showDocs, setShowDocs] = useState(false);
+  const [docSearch, setDocSearch] = useState('');
+  const [showParams, setShowParams] = useState(false);
+  const [paramSearch, setParamSearch] = useState('');
+  const [paramType, setParamType] = useState<'todo' | 'event' | 'status' | null>(null);
+  const [activeParamField, setActiveParamField] = useState<string | null>(null);
   
   const scrollViewRef = useRef<ScrollView>(null);
 
-  // E2EE States
-  const [isUnlocked, setIsUnlocked] = useState(false);
-  const [encryptionKey, setEncryptionKey] = useState<string | null>(null);
+  // E2EE Keys Local State Map (stores derived hex keys per channel ID)
+  const [channelKeys, setChannelKeys] = useState<Record<string, string>>({});
+  
+  // Unlock Passphrase Input Screen State
   const [passphraseInput, setPassphraseInput] = useState('');
   const [unlockError, setUnlockError] = useState('');
 
-  // Load E2EE key from SecureStore on mount/household change
+  // 1. Identify active channel
+  const activeChannelId = state.activeChannelId;
+  const activeChannel: ChatChannel | undefined = activeChannelId
+    ? (activeChannelId === 'general'
+        ? { id: 'general', name: 'General Sync Room', createdBy: null, members: null, passphraseCheck: 'general_e2ee' }
+        : state.channels.find(c => c.id === activeChannelId))
+    : undefined;
+
+  const channelMessages = state.messages.filter(msg => {
+    if (activeChannelId === 'general') return !msg.channelId;
+    return msg.channelId === activeChannelId;
+  });
+
+  // Safe-guard and automatically back out to Lobby if channel details are missing
   useEffect(() => {
-    async function loadKey() {
-      if (!state.householdId) return;
+    if (activeChannelId && !activeChannel) {
+      dispatch({ t: 'setActiveChannel', channelId: null });
+    }
+  }, [activeChannelId, activeChannel, dispatch]);
+
+  if (activeChannelId && !activeChannel) {
+    return null;
+  }
+
+  // 2. Load E2EE key for active channel on mount or channel switch
+  useEffect(() => {
+    async function loadChannelKey() {
+      if (!state.householdId || !activeChannelId) return;
+      
       try {
-        const stored = await SecureStore.getItemAsync(`sprint_key_${state.householdId}`);
-        if (stored) {
-          const derived = deriveKey(stored);
-          setEncryptionKey(derived);
-          setIsUnlocked(true);
-        } else {
-          setEncryptionKey(null);
-          setIsUnlocked(false);
+        if (activeChannelId === 'general') {
+          // General room uses the legacy household passcode
+          const stored = await SecureStore.getItemAsync(`sprint_key_${state.householdId}`);
+          if (stored) {
+            setChannelKeys(prev => ({ ...prev, general: deriveKey(stored) }));
+          }
+        } else if (activeChannel) {
+          // Custom channels use channel-specific passcodes
+          if (!activeChannel.passphraseCheck) return; // Public/unencrypted
+          
+          const stored = await SecureStore.getItemAsync(`channel_key_${activeChannel.id}`);
+          if (stored) {
+            setChannelKeys(prev => ({ ...prev, [activeChannel.id]: stored }));
+          }
         }
       } catch (err) {
         console.warn('SecureStore load error:', err);
       }
     }
-    loadKey();
-  }, [state.householdId]);
+    loadChannelKey();
+  }, [activeChannelId, state.householdId]);
 
-  // Handle Passphrase Unlock
-  const handleUnlock = async () => {
-    if (!passphraseInput.trim() || !state.householdId) return;
+  // 3. Wipes and locks all E2EE channels automatically the second we exit to the Lobby (activeChannelId === null)
+  useEffect(() => {
+    if (!activeChannelId) {
+      // Wiping all custom channel E2EE keys from SecureStore on exit
+      state.channels.forEach(async (c) => {
+        if (c.passphraseCheck) {
+          await SecureStore.deleteItemAsync(`channel_key_${c.id}`).catch(() => {});
+        }
+      });
+      // Wiping legacy household key
+      if (state.householdId) {
+        SecureStore.deleteItemAsync(`sprint_key_${state.householdId}`).catch(() => {});
+      }
+      setChannelKeys({});
+    }
+  }, [activeChannelId, state.channels, state.householdId]);
+
+  // Handle Channel passcode decryption/unlock
+  const handleUnlockChannel = async () => {
+    if (!passphraseInput.trim() || !activeChannelId) return;
+    setUnlockError('');
+    
     try {
       const trimmed = passphraseInput.trim();
       const derived = deriveKey(trimmed);
-      await SecureStore.setItemAsync(`sprint_key_${state.householdId}`, trimmed);
-      setEncryptionKey(derived);
-      setIsUnlocked(true);
-      setUnlockError('');
-      setPassphraseInput('');
+
+      if (activeChannelId === 'general') {
+        await SecureStore.setItemAsync(`sprint_key_${state.householdId!}`, trimmed);
+        setChannelKeys(prev => ({ ...prev, general: derived }));
+        setPassphraseInput('');
+      } else if (activeChannel && activeChannel.passphraseCheck) {
+        // Cache the passcode and unlock
+        await SecureStore.setItemAsync(`channel_key_${activeChannel.id}`, derived);
+        setChannelKeys(prev => ({ ...prev, [activeChannel.id]: derived }));
+        setPassphraseInput('');
+      }
     } catch (err) {
-      setUnlockError('Failed to save secure key');
+      setUnlockError('Verification failed');
     }
   };
 
-  // Handle Locking / Key Rotation
-  const handleLock = async () => {
-    if (!state.householdId) return;
+  // Handle locking a specific channel
+  const handleLockChannel = async (channelId: string) => {
     try {
-      await SecureStore.deleteItemAsync(`sprint_key_${state.householdId}`);
-      setEncryptionKey(null);
-      setIsUnlocked(false);
+      if (channelId === 'general') {
+        await SecureStore.deleteItemAsync(`sprint_key_${state.householdId}`);
+        setChannelKeys(prev => {
+          const next = { ...prev };
+          delete next.general;
+          return next;
+        });
+      } else {
+        await SecureStore.deleteItemAsync(`channel_key_${channelId}`);
+        setChannelKeys(prev => {
+          const next = { ...prev };
+          delete next[channelId];
+          return next;
+        });
+      }
     } catch (err) {
-      console.warn('SecureStore lock error:', err);
+      console.warn('Lock error:', err);
     }
   };
 
@@ -123,7 +251,7 @@ export function ChatScreen() {
     }
   }, [insets.bottom]);
 
-  // Monitor keyboard visibility and height to dynamically position the input box
+  // Monitor keyboard
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
@@ -143,44 +271,124 @@ export function ChatScreen() {
     };
   }, []);
 
-  // Monitor text changes to toggle slash commands and @ mentions autocomplete
   const handleTextChange = (val: string) => {
     setText(val);
     
-    // 1. Slash commands autocomplete check
     if (val === '/') {
       setShowCommands(true);
       setShowMentions(false);
+      setShowDocs(false);
+      setShowParams(false);
     } else if (val.startsWith('/') && !val.includes(' ')) {
       setShowCommands(true);
       setShowMentions(false);
+      setShowDocs(false);
+      setShowParams(false);
     } else {
       setShowCommands(false);
     }
 
-    // 2. Mentions autocomplete check (matches the word currently being typed starting with @)
     const words = val.split(' ');
     const lastWord = words[words.length - 1] || '';
     if (lastWord.startsWith('@')) {
       setShowMentions(true);
       setMentionSearch(lastWord.slice(1));
       setShowCommands(false);
+      setShowDocs(false);
+      setShowParams(false);
     } else {
       setShowMentions(false);
     }
+
+    if (lastWord.startsWith('#')) {
+      setShowDocs(true);
+      setDocSearch(lastWord.slice(1));
+      setShowCommands(false);
+      setShowMentions(false);
+      setShowParams(false);
+    } else {
+      setShowDocs(false);
+    }
+
+    // Slash commands parameter autocomplete parser
+    const lowerVal = val.toLowerCase();
+    
+    if (lowerVal.startsWith('/todo')) {
+      setShowDocs(false);
+      setShowMentions(false);
+      setShowCommands(false);
+      setParamType('todo');
+
+      // Check if they are typing a parameter value (allows spaces in values up to next parameter)
+      const lastParamMatch = val.match(/(title|priority|assigned_to):\s*([^:]*)$/i);
+
+      if (lastParamMatch) {
+        setActiveParamField(lastParamMatch[1].toLowerCase());
+        setParamSearch(lastParamMatch[2] || '');
+        setShowParams(true);
+      } else {
+        // They are typing the title or other parameters, suggest parameters
+        setActiveParamField(null);
+        if (lowerVal.startsWith('/todo ')) {
+          setShowParams(true);
+          const lastWord = words[words.length - 1] || '';
+          setParamSearch(lastWord.includes(':') ? '' : lastWord);
+        } else {
+          setShowParams(false);
+        }
+      }
+    } else if (lowerVal.startsWith('/event')) {
+      setShowDocs(false);
+      setShowMentions(false);
+      setShowCommands(false);
+      setParamType('event');
+
+      const lastParamMatch = val.match(/(title|time|date|who):\s*([^:]*)$/i);
+
+      if (lastParamMatch) {
+        setActiveParamField(lastParamMatch[1].toLowerCase());
+        setParamSearch(lastParamMatch[2] || '');
+        setShowParams(true);
+      } else {
+        setActiveParamField(null);
+        if (lowerVal.startsWith('/event ')) {
+          setShowParams(true);
+          const lastWord = words[words.length - 1] || '';
+          setParamSearch(lastWord.includes(':') ? '' : lastWord);
+        } else {
+          setShowParams(false);
+        }
+      }
+    } else if (lowerVal.startsWith('/status')) {
+      setShowDocs(false);
+      setShowMentions(false);
+      setShowCommands(false);
+      setParamType('status');
+      setActiveParamField(null);
+
+      if (lowerVal.startsWith('/status ')) {
+        setShowParams(true);
+        const match = val.match(/\/status\s+(.*)$/i);
+        setParamSearch(match ? match[1] || '' : '');
+      } else {
+        setShowParams(false);
+      }
+    } else {
+      setParamType(null);
+      setActiveParamField(null);
+      setShowParams(false);
+    }
   };
 
-  // Handle selecting a mention from autocomplete
   const handleSelectMention = (displayName: string) => {
     const words = text.split(' ');
-    words.pop(); // remove the partial @mention search
+    words.pop();
     words.push(`@${displayName} `);
-    setText(words.join(' '));
-    setShowMentions(false);
+    handleTextChange(words.join(' '));
   };
 
   const SLASH_COMMANDS = [
-    { cmd: '/todo ', desc: 'Create a shared sprint task', icon: 'check' },
+    { cmd: '/todo ', desc: 'Create a shared backlog task', icon: 'check' },
     { cmd: '/event ', desc: 'Schedule a roadmap meeting', icon: 'cal' },
     { cmd: '/status', desc: 'Generate daily AI dispatcher status digest', icon: 'bolt' },
     { cmd: '/help', desc: 'Show AI assistant commands and shortcuts', icon: 'user' },
@@ -190,7 +398,6 @@ export function ChatScreen() {
     item.cmd.toLowerCase().startsWith(text.toLowerCase())
   );
 
-  // Filter other household members for tagging (excluding oneself)
   const filteredProfiles = Object.entries(state.profiles)
     .filter(([slot, prof]) => {
       if (slot === state.viewer) return false;
@@ -199,24 +406,414 @@ export function ChatScreen() {
     })
     .map(([slot, prof]) => ({ slot: slot as UserId, ...prof }));
 
-  // Auto-scroll to bottom on mount or when messages change
+  const paramAutocompleteItems = (() => {
+    if (!showParams || !paramType) return [];
+
+    const items: Array<{
+      id: string;
+      title: string;
+      subtitle: string;
+      type: 'param' | 'value';
+      valueToInsert: string;
+      icon: 'check' | 'user' | 'cal' | 'timer' | 'bolt' | 'users';
+    }> = [];
+
+    const addFounderValueSuggestions = (filterQ: string) => {
+      if (!filterQ || 'everyone'.includes(filterQ.toLowerCase())) {
+        items.push({
+          id: 'everyone',
+          title: 'Everyone',
+          subtitle: activeParamField === 'who' || activeParamField === 'assigned_to' 
+            ? 'All household founders (Default)' 
+            : 'All household founders',
+          type: 'value',
+          valueToInsert: 'Everyone',
+          icon: 'users',
+        });
+      }
+      Object.entries(state.profiles).forEach(([slot, prof]) => {
+        if (!filterQ || prof.displayName.toLowerCase().includes(filterQ.toLowerCase())) {
+          items.push({
+            id: slot,
+            title: prof.displayName,
+            subtitle: prof.roleLabel || `Founder ${slot}`,
+            type: 'value',
+            valueToInsert: prof.displayName,
+            icon: 'user',
+          });
+        }
+      });
+    };
+
+    if (paramType === 'todo') {
+      if (activeParamField === 'title') {
+        const defaultVal = 'New Task';
+        if (!paramSearch || defaultVal.toLowerCase().includes(paramSearch.toLowerCase())) {
+          items.push({
+            id: 'default-todo-title',
+            title: defaultVal,
+            subtitle: 'Task Title (Default) · Press to select',
+            type: 'value',
+            valueToInsert: defaultVal,
+            icon: 'check',
+          });
+        }
+      } else if (activeParamField === 'priority') {
+        const priorities = [
+          { title: '1', desc: 'P1 · High priority sprint blocker', val: '1' },
+          { title: '2', desc: 'P2 · Medium priority standard task (Default)', val: '2' },
+          { title: '3', desc: 'P3 · Low priority backlog item', val: '3' },
+        ];
+        priorities.forEach(p => {
+          if (!paramSearch || p.title.includes(paramSearch)) {
+            items.push({
+              id: `priority-${p.title}`,
+              title: p.title,
+              subtitle: p.desc,
+              type: 'value',
+              valueToInsert: p.val,
+              icon: 'bolt',
+            });
+          }
+        });
+      } else if (activeParamField === 'assigned_to') {
+        addFounderValueSuggestions(paramSearch);
+      } else {
+        const params = [
+          { title: 'title:', desc: 'Task description/title (default: "New Task")' },
+          { title: 'priority:', desc: 'Task priority (1: High, 2: Med, 3: Low) (default: P2)' },
+          { title: 'assigned_to:', desc: 'Assign task to a co-founder (default: Everyone)' },
+        ];
+        params.forEach(p => {
+          if (!paramSearch || p.title.toLowerCase().includes(paramSearch.toLowerCase())) {
+            items.push({
+              id: `param-${p.title}`,
+              title: p.title,
+              subtitle: p.desc,
+              type: 'param',
+              valueToInsert: p.title,
+              icon: 'check',
+            });
+          }
+        });
+      }
+    } else if (paramType === 'event') {
+      if (activeParamField === 'title') {
+        const defaultVal = 'Roadmap Meeting';
+        if (!paramSearch || defaultVal.toLowerCase().includes(paramSearch.toLowerCase())) {
+          items.push({
+            id: 'default-event-title',
+            title: defaultVal,
+            subtitle: 'Meeting Title (Default) · Press to select',
+            type: 'value',
+            valueToInsert: defaultVal,
+            icon: 'cal',
+          });
+        }
+      } else if (activeParamField === 'time') {
+        const times = ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00'];
+        times.forEach(t => {
+          if (!paramSearch || t.includes(paramSearch)) {
+            items.push({
+              id: `time-${t}`,
+              title: t,
+              subtitle: t === '12:00' ? 'Start time (HH:MM) (Default)' : 'Start time (HH:MM)',
+              type: 'value',
+              valueToInsert: t,
+              icon: 'timer',
+            });
+          }
+        });
+      } else if (activeParamField === 'date') {
+        const todayStr = new Date().toISOString().split('T')[0];
+        const makeDateStr = (offsetDays: number) => {
+          const d = new Date();
+          d.setDate(d.getDate() + offsetDays);
+          return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        };
+        const dates = [
+          { title: todayStr, desc: 'Today (Default)' },
+          { title: makeDateStr(1), desc: 'Tomorrow' },
+          { title: makeDateStr(2), desc: new Date(Date.now() + 2*86400000).toLocaleDateString('en-US', { weekday: 'long' }) },
+          { title: makeDateStr(7), desc: 'Next week' },
+        ];
+        dates.forEach(d => {
+          if (!paramSearch || d.title.includes(paramSearch)) {
+            items.push({
+              id: `date-${d.title}`,
+              title: d.title,
+              subtitle: d.desc,
+              type: 'value',
+              valueToInsert: d.title,
+              icon: 'cal',
+            });
+          }
+        });
+      } else if (activeParamField === 'who') {
+        addFounderValueSuggestions(paramSearch);
+      } else {
+        const params = [
+          { title: 'title:', desc: 'Event title (default: "Roadmap Meeting")' },
+          { title: 'time:', desc: 'Event start time (default: 12:00)' },
+          { title: 'date:', desc: 'Event date (default: Today)' },
+          { title: 'who:', desc: 'Invite slot or Everyone (default: Everyone)' },
+        ];
+        params.forEach(p => {
+          if (!paramSearch || p.title.toLowerCase().includes(paramSearch.toLowerCase())) {
+            items.push({
+              id: `param-${p.title}`,
+              title: p.title,
+              subtitle: p.desc,
+              type: 'param',
+              valueToInsert: p.title,
+              icon: 'cal',
+            });
+          }
+        });
+      }
+    } else if (paramType === 'status') {
+      addFounderValueSuggestions(paramSearch);
+    }
+
+    return items;
+  })();
+
+  const handleSelectParamItem = (item: typeof paramAutocompleteItems[number]) => {
+    const words = text.split(' ');
+    
+    if (item.type === 'param') {
+      words.pop();
+      words.push(item.valueToInsert);
+      handleTextChange(words.join(' '));
+    } else {
+      if (activeParamField) {
+        const regex = new RegExp(`(${activeParamField}:\\s*)[^:]*$`, 'i');
+        handleTextChange(text.replace(regex, `$1${item.valueToInsert} `));
+      } else {
+        words.pop();
+        words.push(item.valueToInsert);
+        handleTextChange(words.join(' ') + ' ');
+      }
+    }
+    
+    setShowParams(false);
+  };
+
+  const docAutocompleteItems = (() => {
+    const items: Array<{
+      id: string;
+      title: string;
+      subtitle: string;
+      type: 'doc' | 'file';
+      uri?: string;
+      docId?: string;
+    }> = [];
+
+    state.docs.forEach(doc => {
+      // Add the document itself
+      items.push({
+        id: doc.id,
+        title: doc.title,
+        subtitle: 'Document',
+        type: 'doc',
+        docId: doc.id,
+      });
+
+      // Add its attachments if any
+      if (doc.attachments && Array.isArray(doc.attachments)) {
+        doc.attachments.forEach((att, idx) => {
+          const kb = att.size ? `${Math.round(att.size / 1024)} KB` : 'Attachment';
+          items.push({
+            id: `${doc.id}-att-${idx}`,
+            title: att.name,
+            subtitle: `File · ${kb} · from "${doc.title}"`,
+            type: 'file',
+            uri: att.uri,
+            docId: doc.id,
+          });
+        });
+      }
+    });
+
+    if (!docSearch) return items;
+    const q = docSearch.toLowerCase();
+    return items.filter(item => 
+      item.title.toLowerCase().includes(q) || 
+      item.subtitle.toLowerCase().includes(q)
+    );
+  })();
+
+  const handleSelectDocItem = (item: typeof docAutocompleteItems[number]) => {
+    const words = text.split(' ');
+    words.pop(); // Remove the '#...' word
+    
+    const newVal = item.type === 'doc'
+      ? `[Doc: ${item.title}](doc:${item.id}) `
+      : `[File: ${item.title}](${item.uri}) `;
+    
+    words.push(newVal);
+    handleTextChange(words.join(' '));
+    setShowDocs(false);
+  };
+
+  const handleOpenDoc = (docId: string) => {
+    const doc = state.docs.find(d => d.id === docId);
+    if (doc) {
+      dispatch({ t: 'openDoc', doc });
+    } else {
+      Alert.alert('Not Found', 'Document could not be located.');
+    }
+  };
+
+  const renderMessageContent = (content: string, isMe: boolean, onOpenDoc: (docId: string) => void) => {
+    const regex = /\[(Doc|File):\s*([^\]]+)\]\(([^)]+)\)/g;
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let match;
+
+    const baseTextStyle = [ch.messageText, isMe ? ch.textMe : ch.textPartner];
+
+    while ((match = regex.exec(content)) !== null) {
+      const matchIndex = match.index;
+      const [fullMatch, type, label, target] = match;
+
+      if (matchIndex > lastIndex) {
+        parts.push(
+          <Text key={`text-${lastIndex}`}>
+            {parseMarkdown(content.substring(lastIndex, matchIndex), baseTextStyle)}
+          </Text>
+        );
+      }
+
+      const isDoc = type === 'Doc';
+      const cleanTarget = target.startsWith('doc:') ? target.substring(4) : target;
+
+      parts.push(
+        <TouchableOpacity
+          key={`chip-${matchIndex}`}
+          onPress={() => {
+            if (isDoc) {
+              onOpenDoc(cleanTarget);
+            } else {
+              Alert.alert('Attachment Link', `Open file: ${label}`, [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Open Link',
+                  onPress: () => {
+                    import('react-native').then(rn => {
+                      rn.Linking.openURL(target).catch(() => {});
+                    });
+                  }
+                }
+              ]);
+            }
+          }}
+          style={[
+            ch.attachmentChip,
+            isMe ? ch.attachmentChipMe : ch.attachmentChipPartner
+          ]}
+        >
+          <Icon name={isDoc ? 'book' : 'note'} size={12} color={isMe ? '#fff' : colors.fg2} />
+          <Text style={[ch.attachmentChipLabel, { color: isMe ? '#fff' : colors.fg1 }]} numberOfLines={1}>
+            {label}
+          </Text>
+          <Text style={[ch.attachmentChipType, { color: isMe ? 'rgba(255,255,255,0.7)' : colors.fg5 }]}>
+            {isDoc ? 'DOCUMENT' : 'FILE'}
+          </Text>
+        </TouchableOpacity>
+      );
+
+      lastIndex = regex.lastIndex;
+    }
+
+    if (lastIndex < content.length) {
+      parts.push(
+        <Text key={`text-${lastIndex}`}>
+          {parseMarkdown(content.substring(lastIndex), baseTextStyle)}
+        </Text>
+      );
+    }
+
+    if (parts.length === 0) {
+      return (
+        <Text>
+          {parseMarkdown(content, baseTextStyle)}
+        </Text>
+      );
+    }
+
+    return (
+      <View style={{ flexWrap: 'wrap', flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+        {parts}
+      </View>
+    );
+  };
+
+  // Auto-scroll on messages change
   useEffect(() => {
     setTimeout(() => {
       scrollViewRef.current?.scrollToEnd({ animated: true });
     }, 100);
-  }, [state.messages, isUnlocked]);
+  }, [state.messages, activeChannelId]);
+
+  // Convert Message to Task handler
+  const handleLongPressMessage = (decryptedContent: string, isLocked: boolean) => {
+    if (isLocked) return;
+    Alert.alert(
+      'Message Actions',
+      undefined,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Convert to Shared To-do',
+          onPress: async () => {
+            if (!state.householdId || !state.userId || !activeChannelId) return;
+            setLoading(true);
+            try {
+              // 1. Insert the todo
+              await supabase.from('todos').insert({
+                household_id: state.householdId,
+                owner_id: state.userId,
+                text: decryptedContent.trim(),
+                is_shared: true,
+                priority: 2,
+                due_label: 'TODAY',
+              });
+
+              // 2. Post a dispatcher confirmation message in the chat
+              const encryptionKey = activeChannelId === 'general' ? channelKeys.general : channelKeys[activeChannelId];
+              const dispatcherText = `DISPATCHER: Added task "${decryptedContent.trim()}" directly to the shared backlog.`;
+              const encryptedFeedback = encryptionKey ? encryptText(dispatcherText, encryptionKey) : dispatcherText;
+
+              await supabase.from('messages').insert({
+                household_id: state.householdId,
+                sender_short: 'S',
+                content: encryptedFeedback,
+                is_system: true,
+                channel_id: activeChannelId === 'general' ? null : activeChannelId,
+              });
+            } catch (err) {
+              console.warn('Convert error:', err);
+            } finally {
+              setLoading(false);
+            }
+          }
+        }
+      ]
+    );
+  };
 
   const handleSend = async (customText?: string) => {
     const msgText = (customText || text).trim();
-    if (!msgText || !state.householdId || !state.userId) return;
+    if (!msgText || !state.householdId || !state.userId || !activeChannelId) return;
 
     if (!customText) setText('');
     setLoading(true);
 
     try {
       const myDisplayName = state.profiles[state.viewer as UserId]?.displayName || `Founder ${state.viewer}`;
+      const encryptionKey = activeChannelId === 'general' ? channelKeys.general : channelKeys[activeChannelId];
 
-      // ENCRYPT the user message before sending to database!
       const encryptedContent = encryptionKey ? encryptText(msgText, encryptionKey) : msgText;
 
       // 1. Send the user's message
@@ -226,15 +823,15 @@ export function ChatScreen() {
         sender_short: state.viewer,
         content: encryptedContent,
         is_system: false,
+        channel_id: activeChannelId === 'general' ? null : activeChannelId,
       });
 
       if (error) throw error;
 
-      // 2. PARSE FOR MENTIONS (and trigger real-time system notifications)
+      // 2. PARSE FOR MENTIONS (system notifications)
       Object.entries(state.profiles).forEach(async ([slot, prof]) => {
         const mentionTag = `@${prof.displayName}`;
         if (msgText.toLowerCase().includes(mentionTag.toLowerCase()) && slot !== state.viewer) {
-          // Insert a secure push notification inside Supabase for tagged member
           await supabase.from('notifications').insert({
             household_id: state.householdId,
             for_user:     slot,
@@ -246,66 +843,157 @@ export function ChatScreen() {
         }
       });
 
-      // 3. Local Smart Dispatcher AI Parser (operates on decrypted msgText)
+      // 3. Local Smart Dispatcher AI Parser
       const lower = msgText.toLowerCase();
 
       if (lower.startsWith('/todo ')) {
-        const todoText = msgText.slice(6).trim();
-        if (todoText) {
-          // Create the todo
+        const commandText = msgText.slice(6).trim();
+        let priorityVal = 2; // Default priority: 2
+        let assignedToVal: UserId[] | null = null;
+        let cleanText = '';
+
+        // Check for title: parameter
+        const titleMatch = commandText.match(/title:\s*([^:]*?)(?=(?:\s*(?:priority|assigned_to):|$))/i);
+        if (titleMatch) {
+          cleanText = titleMatch[1].trim();
+        }
+
+        const priorityMatch = commandText.match(/priority:\s*([1-3])/i);
+        if (priorityMatch) {
+          priorityVal = parseInt(priorityMatch[1], 10);
+        }
+
+        const assignedMatch = commandText.match(/assigned_to:\s*([^:]*?)(?=(?:\s*(?:title|priority):|$))/i);
+        if (assignedMatch) {
+          const nameToMatch = assignedMatch[1].trim();
+          if (nameToMatch.toLowerCase() === 'everyone') {
+            assignedToVal = null;
+          } else {
+            const matchSlot = Object.entries(state.profiles).find(([_, prof]) => 
+              prof.displayName.toLowerCase() === nameToMatch.toLowerCase()
+            );
+            if (matchSlot) {
+              assignedToVal = [matchSlot[0] as UserId];
+            }
+          }
+        }
+
+        // If no title: parameter was provided, fall back to stripping parameters
+        if (!cleanText) {
+          cleanText = commandText
+            .replace(/title:\s*([^:]*?)(?=(?:\s*(?:priority|assigned_to):|$))/i, '')
+            .replace(/priority:\s*[1-3]/i, '')
+            .replace(/assigned_to:\s*([^:]*?)(?=(?:\s*(?:title|priority):|$))/i, '')
+            .trim();
+        }
+
+        if (cleanText) {
           await supabase.from('todos').insert({
             household_id: state.householdId,
             owner_id: state.userId,
-            text: todoText,
+            text: cleanText,
             is_shared: true,
-            priority: 2,
+            priority: priorityVal,
             due_label: 'TODAY',
+            assigned_to: assignedToVal,
           });
 
-          // Encrypt dispatcher message response!
-          const dispatcherContent = `🤖 **DISPATCHER:** Added task **"${todoText}"** to the shared backlog.`;
+          const priorityLabel = priorityVal === 1 ? 'High (P1)' : priorityVal === 2 ? 'Medium (P2)' : 'Low (P3)';
+          const assigneeNames = assignedToVal 
+            ? assignedToVal.map(slot => state.profiles[slot]?.displayName || `Founder ${slot}`).join(', ') 
+            : 'Everyone';
+
+          const dispatcherContent = `DISPATCHER: Added task "${cleanText}" to the shared backlog.\n\nParameters:\n• Priority: ${priorityLabel}\n• Assigned To: ${assigneeNames}`;
           const encryptedDispatcher = encryptionKey ? encryptText(dispatcherContent, encryptionKey) : dispatcherContent;
 
-          // Dispatcher response
           await supabase.from('messages').insert({
             household_id: state.householdId,
             sender_short: 'S',
             content: encryptedDispatcher,
             is_system: true,
+            channel_id: activeChannelId === 'general' ? null : activeChannelId,
           });
         }
       } else if (lower.startsWith('/event ')) {
-        const eventParts = msgText.slice(7).trim().split(' at ');
-        const eventTitle = eventParts[0]?.trim();
+        const commandText = msgText.slice(7).trim();
         let eventTime = '12:00:00';
-        if (eventParts[1]) {
-          const rawTime = eventParts[1].trim();
-          eventTime = rawTime.includes(':') ? `${rawTime}:00` : `${rawTime}:00:00`;
+        let eventDate = new Date().toISOString().split('T')[0];
+        let inviteWho: UserId | 'B' = 'B';
+        let cleanText = '';
+
+        // Check for title: parameter
+        const titleMatch = commandText.match(/title:\s*([^:]*?)(?=(?:\s*(?:time|date|who):|$))/i);
+        if (titleMatch) {
+          cleanText = titleMatch[1].trim();
         }
 
-        if (eventTitle) {
-          // Create calendar event
+        const timeMatch = commandText.match(/time:\s*([0-2]?[0-9]:[0-5][0-9])/i);
+        if (timeMatch) {
+          eventTime = `${timeMatch[1]}:00`;
+        } else {
+          // Fallback legacy parser: `at 16:30`
+          const atMatch = commandText.match(/\s+at\s+([0-2]?[0-9]:[0-5][0-9])/i);
+          if (atMatch) {
+            eventTime = `${atMatch[1]}:00`;
+          }
+        }
+
+        const dateMatch = commandText.match(/date:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i);
+        if (dateMatch) {
+          eventDate = dateMatch[1];
+        }
+
+        const whoMatch = commandText.match(/who:\s*([^:]*?)(?=(?:\s*(?:title|time|date):|$))/i);
+        if (whoMatch) {
+          const whoName = whoMatch[1].trim();
+          if (whoName.toLowerCase() === 'everyone' || whoName.toLowerCase() === 'both') {
+            inviteWho = 'B';
+          } else {
+            const matchSlot = Object.entries(state.profiles).find(([_, prof]) => 
+              prof.displayName.toLowerCase() === whoName.toLowerCase()
+            );
+            if (matchSlot) {
+              inviteWho = matchSlot[0] as UserId;
+            }
+          }
+        }
+
+        // If no title: parameter was provided, fall back to stripping parameters
+        if (!cleanText) {
+          cleanText = commandText
+            .replace(/title:\s*([^:]*?)(?=(?:\s*(?:time|date|who):|$))/i, '')
+            .replace(/time:\s*[0-2]?[0-9]:[0-5][0-9]/i, '')
+            .replace(/date:\s*[0-9]{4}-[0-9]{2}-[0-9]{2}/i, '')
+            .replace(/who:\s*([^:]*?)(?=(?:\s*(?:title|time|date):|$))/i, '')
+            .replace(/\s+at\s+[0-2]?[0-9]:[0-5][0-9]/i, '')
+            .trim();
+        }
+
+        if (cleanText) {
           await supabase.from('events').insert({
             household_id: state.householdId,
             owner_id: state.userId,
-            title: eventTitle,
+            title: cleanText,
             start_time: eventTime,
-            end_time: eventTime, // simpler for quick creations
-            event_date: new Date().toISOString().split('T')[0],
-            who: 'B',
+            end_time: eventTime,
+            event_date: eventDate,
+            who: inviteWho,
             is_private: false,
           });
 
-          // Encrypt dispatcher message response!
-          const dispatcherContent = `🤖 **DISPATCHER:** Scheduled **"${eventTitle}"** today at ${eventTime.slice(0, 5)} in the roadmap.`;
+          const inviteeName = inviteWho === 'B' 
+            ? 'Everyone' 
+            : (state.profiles[inviteWho]?.displayName || `Founder ${inviteWho}`);
+
+          const dispatcherContent = `DISPATCHER: Scheduled "${cleanText}" in the roadmap.\n\nParameters:\n• Date: ${eventDate}\n• Time: ${eventTime.slice(0, 5)}\n• Invitee: ${inviteeName}`;
           const encryptedDispatcher = encryptionKey ? encryptText(dispatcherContent, encryptionKey) : dispatcherContent;
 
-          // Dispatcher response
           await supabase.from('messages').insert({
             household_id: state.householdId,
             sender_short: 'S',
             content: encryptedDispatcher,
             is_system: true,
+            channel_id: activeChannelId === 'general' ? null : activeChannelId,
           });
         }
       } else if (
@@ -313,36 +1001,150 @@ export function ChatScreen() {
         lower.includes('@coordinator') ||
         lower === 'help' ||
         lower === '/help' ||
-        lower === '/status'
+        lower.startsWith('/status')
       ) {
         let content = '';
         if (
           lower.includes('summarize') ||
           lower.includes('agenda') ||
           lower.includes('status') ||
-          lower === '/status'
+          lower.startsWith('/status')
         ) {
-          // Compile daily status summary
-          const todayEvents = state.events.filter(e => {
-            const todayStr = new Date().toISOString().split('T')[0];
-            return e.day === todayStr;
-          });
-          const activeTodos = state.todos.filter(t => !t.done);
+          let targetSlot: UserId | null = null;
+          const statusMatch = msgText.match(/\/status\s+@?([a-zA-Z0-9\s]+)/i);
+          if (statusMatch) {
+            const rawName = statusMatch[1].trim();
+            if (rawName.toLowerCase() !== 'everyone' && rawName.toLowerCase() !== 'both') {
+              const matchSlot = Object.entries(state.profiles).find(([_, prof]) => 
+                prof.displayName.toLowerCase() === rawName.toLowerCase()
+              );
+              if (matchSlot) {
+                targetSlot = matchSlot[0] as UserId;
+              }
+            }
+          }
 
-          content = `🤖 **DISPATCHER DIGEST:**\n\n📅 **Today's Roadmap:**\n${
-            todayEvents.length > 0
-              ? todayEvents.map(e => `• ${e.start} - ${e.title}`).join('\n')
-              : '• No sessions scheduled for today.'
-          }\n\n✅ **Sprint Backlog (${activeTodos.length} active):**\n${
-            activeTodos.length > 0
-              ? activeTodos.slice(0, 5).map(t => `• ${t.text}`).join('\n') + (activeTodos.length > 5 ? '\n• ...and more' : '')
-              : '• Backlog is clear! Excellent job.'
-          }`;
+          const getFounderDigest = (slotId: UserId) => {
+            const prof = state.profiles[slotId];
+            if (!prof) return '';
+
+            // 1. Availability Calculation
+            const activeFocus = state.focusSessions.find(fs => fs.ownerSlot === slotId && fs.endedAt === null);
+            
+            const todayStr = new Date().toISOString().split('T')[0];
+            const todayEvents = state.events.filter(e => e.day === todayStr && (e.who === slotId || e.who === 'B'));
+
+            const now = new Date();
+            const currentHour = now.getHours();
+            const currentMin = now.getMinutes();
+            const currentTimeVal = currentHour * 60 + currentMin;
+
+            const activeEvent = todayEvents.find(e => {
+              if (!e.start || !e.end) return false;
+              const [sh, sm] = e.start.split(':').map(Number);
+              const [eh, em] = e.end.split(':').map(Number);
+              const startTimeVal = sh * 60 + sm;
+              const endTimeVal = eh * 60 + em;
+              return currentTimeVal >= startTimeVal && currentTimeVal <= endTimeVal;
+            });
+
+            let availabilityStr = 'CURRENTLY FREE';
+            if (activeFocus) {
+              availabilityStr = `BUSY IN FOCUS: "${activeFocus.label}"`;
+            } else if (activeEvent) {
+              availabilityStr = `IN MEETING: "${activeEvent.title}"`;
+            }
+
+            // 2. Task Completion (done === true and assigned to them)
+            const completedTodos = state.todos.filter(t => {
+              const isAssigned = t.assignedTo ? t.assignedTo.includes(slotId) : t.who === slotId;
+              return t.done && isAssigned;
+            });
+
+            // 3. Active Backlog (done === false and assigned to them)
+            const activeBacklog = state.todos.filter(t => {
+              const isAssigned = t.assignedTo ? t.assignedTo.includes(slotId) : t.who === slotId;
+              return !t.done && isAssigned;
+            });
+
+            // 4. Upcoming Agenda today
+            const upcomingAgenda = todayEvents.filter(e => {
+              if (!e.start) return false;
+              const [sh, sm] = e.start.split(':').map(Number);
+              const startTimeVal = sh * 60 + sm;
+              return startTimeVal > currentTimeVal;
+            });
+
+            let digest = `### **${prof.displayName.toUpperCase()}** (${prof.roleLabel || 'Founder'})\n`;
+            digest += `**Status**: ${availabilityStr}\n\n`;
+            
+            digest += `**Completed Today (${completedTodos.length})**:\n`;
+            if (completedTodos.length > 0) {
+              digest += completedTodos.map(t => `• ${t.text}`).join('\n') + '\n';
+            } else {
+              digest += `• No tasks completed today.\n`;
+            }
+            
+            digest += `\n**Active Backlog (${activeBacklog.length})**:\n`;
+            if (activeBacklog.length > 0) {
+              digest += activeBacklog.map(t => `• [P${t.p}] ${t.text}`).join('\n') + '\n';
+            } else {
+              digest += `• Backlog is clear!\n`;
+            }
+
+            digest += `\n**Upcoming Today (${upcomingAgenda.length})**:\n`;
+            if (upcomingAgenda.length > 0) {
+              digest += upcomingAgenda.map(e => `• \`${e.start}\` - ${e.title}`).join('\n') + '\n';
+            } else {
+              digest += `• No more meetings scheduled today.\n`;
+            }
+
+            return digest;
+          };
+
+          if (targetSlot) {
+            content = `## SMART DISPATCHER DIGEST\n\n` + getFounderDigest(targetSlot);
+          } else {
+            content = `## SMART DISPATCHER CO-FOUNDER COCKPIT\n\n`;
+            Object.keys(state.profiles).forEach((slot, idx, arr) => {
+              content += getFounderDigest(slot as UserId);
+              if (idx < arr.length - 1) {
+                content += `\n---\n\n`;
+              }
+            });
+          }
         } else {
-          content = `🤖 **DISPATCHER HELP:**\n\nI parse your messages in real-time to automate co-founder coordination:\n\n• **Create Tasks**: Type \`/todo [task]\` (e.g. \`/todo Review pitch deck\`)\n• **Schedule Roadmaps**: Type \`/event [meeting] at [HH:MM]\` (e.g. \`/event VC call at 16:30\`)\n• **Get Status**: Type \`/status\` (or \`@dispatcher summarize\`)\n• **Help**: Type \`/help\` (or \`@dispatcher help\``;
+          content = `**DISPATCHER CO-FOUNDER COCKPIT GUIDE**
+
+I automate co-founder communication and roadmap syncs in real-time using secure, zero-knowledge parsing. Here are my available commands and parameters:
+
+**SHARED BACKLOG AUTOMATION**
+• **Command**: \`/todo [task]\`
+• **Parameters**:
+  - \`priority:[1|2|3]\` (P1: High, P2: Med, P3: Low)
+  - \`assigned_to:[FounderName]\`
+• **Example**: \`/todo Refactor E2EE keys priority:1 assigned_to:Aditya\`
+
+**ROADMAP MEETING SCHEDULER**
+• **Command**: \`/event [title]\`
+• **Parameters**:
+  - \`time:[HH:MM]\` (Start time)
+  - \`date:[YYYY-MM-DD]\` (Event date)
+  - \`who:[FounderName|Everyone]\` (Invitee)
+• **Example**: \`/event Pitch VC time:14:00 date:2026-06-01 who:Everyone\`
+• *Note*: You can still use the legacy format \`/event Meeting at 15:30\`.
+
+**CO-FOUNDER AVAILABILITY DIGEST**
+• **Command**: \`/status [FounderName]\` (or just \`/status\` for household dashboard)
+• **Description**: Compiles a real-time status summary of focus sessions, today's calendar overlaps, completed items, active backlog, and future agenda.
+• **Example**: \`/status Aditya\`
+
+**WIKI & ATTACHMENT MENTIONS**
+• **Action**: Type \`#\` inside the input bar to search and attach documents or uploaded files. Document links are parsed into clickable chips that open automatically when tapped.
+
+*Pro-Tip*: Long-press any chat bubble to instantly convert its content into a shared backlog task!`;
         }
 
-        // Encrypt dispatcher message response!
         const encryptedContent = encryptionKey ? encryptText(content, encryptionKey) : content;
 
         await supabase.from('messages').insert({
@@ -350,6 +1152,7 @@ export function ChatScreen() {
           sender_short: 'S',
           content: encryptedContent,
           is_system: true,
+          channel_id: activeChannelId === 'general' ? null : activeChannelId,
         });
       }
     } catch (err) {
@@ -359,44 +1162,129 @@ export function ChatScreen() {
     }
   };
 
-  // 🔒 Frosted Glass / Security Unlock HUD
+  // ─── Render Lobby View State ──────────────────────────────
+  if (!activeChannelId) {
+    const publicChannels = state.channels.filter(c => c.members === null);
+    const privateChannels = state.channels.filter(c => c.members !== null && c.members.includes(state.viewer));
+    const allChannelsList = [
+      { id: 'general', name: 'General Sync Room', members: null, passphraseCheck: 'general_e2ee' },
+      ...publicChannels,
+      ...privateChannels,
+    ];
+
+    return (
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: 18, paddingBottom: 130 }}>
+        <ScreenHeader
+          eyebrow={
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <Icon name="lock" size={9} color={colors.fg5} strokeWidth={2.2} />
+              <Text style={{ fontFamily: 'Courier', fontSize: 9, fontWeight: '800', color: colors.fg5, letterSpacing: 1.5 }}>
+                {`SECURE CHAT LOBBY · ${allChannelsList.length} ACTIVE ROOMS`}
+              </Text>
+            </View>
+          }
+          title="Channels"
+          ghost="co-founder sync."
+          sub="E2EE private war rooms and system automated dispatching feeds."
+          right={
+            <TouchableOpacity style={ch.createBtn} onPress={() => dispatch({ t: 'openNewChannel' })}>
+              <Icon name="plus" size={16} color="#fff" />
+              <Text style={ch.createBtnText}>NEW</Text>
+            </TouchableOpacity>
+          }
+        />
+
+        <SecLabel count={allChannelsList.length}>Available Channels</SecLabel>
+        
+        <Card style={{ padding: 0, overflow: 'hidden' }}>
+          {allChannelsList.map((chan, idx) => {
+            const isE2EE = chan.passphraseCheck !== null;
+            const hasAccess = chan.members === null || chan.members.includes(state.viewer);
+            if (!hasAccess) return null;
+
+            // Lock status check
+            const unlocked = chan.id === 'general' ? !!channelKeys.general : (isE2EE ? !!channelKeys[chan.id] : true);
+
+            return (
+              <TouchableOpacity
+                key={chan.id}
+                onPress={() => dispatch({ t: 'setActiveChannel', channelId: chan.id })}
+                style={[
+                  ch.channelRow,
+                  idx < allChannelsList.length - 1 && { borderBottomWidth: 1, borderBottomColor: colors.border06 }
+                ]}
+              >
+                <View style={ch.channelIconContainer}>
+                  <Icon name={isE2EE ? (unlocked ? 'unlock' : 'lock') : 'message'} size={18} color={colors.fg2} />
+                </View>
+
+                <View style={{ flex: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={ch.channelNameText}>{chan.name}</Text>
+                  {isE2EE && (
+                    <View style={[ch.lockPill, unlocked ? ch.lockPillUnlocked : ch.lockPillLocked]}>
+                      <Icon name={unlocked ? 'unlock' : 'lock'} size={8} color={unlocked ? '#4B5563' : colors.fg5} />
+                      <Text style={ch.lockPillText}>{unlocked ? 'UNLOCKED' : 'SECURE E2EE'}</Text>
+                    </View>
+                  )}
+                </View>
+                
+                <Icon name="chev" size={14} color={colors.fg6} />
+              </TouchableOpacity>
+            );
+          })}
+        </Card>
+      </ScrollView>
+    );
+  }
+
+  // ─── Render Passcode Unlock Screen ──────────────────────────
+  const isE2E = activeChannel!.passphraseCheck !== null;
+  const isUnlocked = activeChannelId === 'general' ? !!channelKeys.general : (isE2E ? !!channelKeys[activeChannel!.id] : true);
   const Container = Platform.OS === 'ios' ? KeyboardAvoidingView : View;
   const containerProps = Platform.OS === 'ios' ? {
     behavior: 'padding' as const,
-    keyboardVerticalOffset: insets.top + 60
+    keyboardVerticalOffset: Platform.OS === 'ios' ? 0 : 60,
   } : {};
 
   if (!isUnlocked) {
     return (
       <Container
-        style={{ flex: 1, backgroundColor: '#0a0a0a', paddingBottom: Platform.OS === 'android' ? (keyboardHeight > 0 ? keyboardHeight : 0) : 0 }}
+        style={{ flex: 1, backgroundColor: '#0a0a0a' }}
         {...containerProps}
       >
         <View style={ch.unlockContainer}>
+          {/* Immersive Header inside unlock screen to exit back to Lobby */}
+          <View style={[ch.backHeader, { top: insets.top + 8 }]}>
+            <TouchableOpacity onPress={() => dispatch({ t: 'setActiveChannel', channelId: null })} style={ch.unlockBackBtn}>
+              <Icon name="chevLeft" size={18} color="#fff" />
+              <Text style={ch.backBtnText}>BACK TO CHANNELS</Text>
+            </TouchableOpacity>
+          </View>
+
           <Card tight style={ch.unlockCard}>
             <View style={ch.lockIconWrapper}>
               <Icon name="lock" size={26} color={colors.foreground} />
             </View>
-            <Text style={ch.unlockTitle}>Sync War Room</Text>
+            <Text style={ch.unlockTitle}>{activeChannel!.name}</Text>
             <Text style={ch.unlockSub}>
-              Messages in this chat are secured with end-to-end encryption. Enter your shared secret passphrase to decrypt.
+              This war room is encrypted with zero-knowledge AES-256. Enter the correct secret passphrase to locally unlock and decrypt messages.
             </Text>
 
             <TextInput
               secureTextEntry
               style={ch.unlockInput}
-              placeholder="Co-founder Passphrase"
+              placeholder="Room Passphrase"
               placeholderTextColor={colors.fg5}
               value={passphraseInput}
               onChangeText={setPassphraseInput}
-              onSubmitEditing={handleUnlock}
+              onSubmitEditing={handleUnlockChannel}
               autoFocus
             />
 
             {unlockError ? <Text style={ch.unlockErr}>{unlockError}</Text> : null}
 
-            <TouchableOpacity style={ch.unlockBtn} onPress={handleUnlock}>
-              <Text style={ch.unlockBtnText}>UNLOCK DECRYPT</Text>
+            <TouchableOpacity style={ch.unlockBtn} onPress={handleUnlockChannel}>
+              <Text style={ch.unlockBtnText}>UNLOCK ROOM</Text>
             </TouchableOpacity>
           </Card>
         </View>
@@ -404,13 +1292,15 @@ export function ChatScreen() {
     );
   }
 
-  // Lock button placed on header right
-  const lockHeaderButton = (
-    <TouchableOpacity onPress={handleLock} style={ch.lockHeaderBtn}>
-      <Icon name="lock" size={11} color={colors.foreground} />
-      <Text style={ch.lockHeaderBtnText}>LOCK</Text>
-    </TouchableOpacity>
-  );
+  // ─── Render Active Immersive Chat Screen View ───────────────
+  const activeKey = activeChannelId === 'general' ? channelKeys.general : channelKeys[activeChannel!.id];
+  
+  const visibleMessages = channelMessages.filter(msg => {
+    if (!msg.content.startsWith('__E2EE__::')) return true;
+    if (!activeKey) return false;
+    const decrypted = decryptText(msg.content, activeKey);
+    return !decrypted.startsWith('🔒 [Decryption failed');
+  });
 
   return (
     <Container
@@ -418,15 +1308,35 @@ export function ChatScreen() {
       {...containerProps}
     >
       <View style={ch.container}>
-        {/* Sticky Screen Header at the top of the chat area */}
-        <View style={{ paddingHorizontal: 18, paddingTop: 18, borderBottomWidth: 1, borderBottomColor: colors.border06, backgroundColor: '#fff', paddingBottom: 10 }}>
-          <ScreenHeader
-            eyebrow={`🔒 SECURE E2EE · ${state.messages.length} MESSAGE${state.messages.length === 1 ? '' : 'S'}`}
-            title="Sync"
-            ghost="at the speed of thought."
-            sub="Zero-knowledge co-founder messaging & automated AI dispatcher."
-            right={lockHeaderButton}
-          />
+        {/* Telegram/WhatsApp style Back Header bar */}
+        <View style={[ch.activeHeaderBar, { paddingTop: insets.top + 8 }]}>
+          <TouchableOpacity onPress={() => dispatch({ t: 'setActiveChannel', channelId: null })} style={ch.headerBackBtn}>
+            <Icon name="chevLeft" size={20} color={colors.fg1} />
+          </TouchableOpacity>
+          
+          <View style={{ flex: 1 }}>
+            <Text style={ch.activeChannelTitle} numberOfLines={1}>{activeChannel!.name}</Text>
+            <View style={styles.row}>
+              {isE2E ? (
+                <View style={[styles.row, { gap: 4 }]}>
+                  <Icon name="lock" size={8} color={colors.fg5} />
+                  <Text style={ch.activeChannelSub}>E2EE SECURED</Text>
+                </View>
+              ) : (
+                <View style={[styles.row, { gap: 4 }]}>
+                  <Icon name="users" size={8} color={colors.fg5} />
+                  <Text style={ch.activeChannelSub}>PUBLIC HOUSEHOLD ROOM</Text>
+                </View>
+              )}
+            </View>
+          </View>
+
+          {isE2E && (
+            <TouchableOpacity onPress={() => handleLockChannel(activeChannelId)} style={ch.headerLockBtn}>
+              <Icon name="lock" size={10} color={colors.foreground} />
+              <Text style={ch.headerLockBtnText}>LOCK</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <ScrollView
@@ -435,7 +1345,7 @@ export function ChatScreen() {
           style={{ flex: 1 }}
           contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end', paddingHorizontal: 18, paddingBottom: 20 }}
         >
-          {state.messages.length === 0 ? (
+          {visibleMessages.length === 0 ? (
             <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', marginVertical: 80 }}>
               <Icon name="message" size={40} color={colors.fg8} />
               <Text style={ch.emptyText}>Feed is clear. Start planning your next sprint.</Text>
@@ -443,7 +1353,7 @@ export function ChatScreen() {
           ) : (
             (() => {
               let lastDateLabel = '';
-              return state.messages.map((msg) => {
+              return visibleMessages.map((msg) => {
                 const dateLabel = getFriendlyDateLabel(msg.createdAt);
                 const showHeader = dateLabel !== lastDateLabel;
                 lastDateLabel = dateLabel;
@@ -451,8 +1361,7 @@ export function ChatScreen() {
                 const isMe = msg.senderShort === state.viewer;
                 const isSystem = msg.isSystem || msg.senderShort === 'S';
 
-                // DECRYPT ciphertext locally on device!
-                const decryptedContent = encryptionKey ? decryptText(msg.content, encryptionKey) : msg.content;
+                const decryptedContent = activeKey ? decryptText(msg.content, activeKey) : msg.content;
                 const isLocked = decryptedContent.startsWith('🔒 [Decryption failed');
 
                 const senderProfile = state.profiles[msg.senderShort as UserId];
@@ -478,12 +1387,11 @@ export function ChatScreen() {
                             <Text style={ch.systemBadge}>DISPATCHER</Text>
                             <Text style={ch.systemTime}>{msg.timestamp}</Text>
                           </View>
-                          <Text style={ch.systemContent}>{decryptedContent}</Text>
+                          <Text style={ch.systemContent}>{parseMarkdown(decryptedContent, ch.systemContent)}</Text>
                         </Card>
                       </View>
                     ) : (
                       <View style={[ch.messageRow, isMe ? ch.rowRight : ch.rowLeft]}>
-                        {/* Incoming message avatar aligned to the bottom-left */}
                         {!isMe && (
                           <View style={{ marginRight: 8, alignSelf: 'flex-end', marginBottom: 2 }}>
                             <UserChip id={msg.senderShort as UserId} size="sm" />
@@ -491,7 +1399,9 @@ export function ChatScreen() {
                         )}
                         
                         <View style={{ maxWidth: '78%' }}>
-                          <View
+                          <TouchableOpacity
+                            activeOpacity={0.85}
+                            onLongPress={() => handleLongPressMessage(decryptedContent, isLocked)}
                             style={[
                               ch.bubble,
                               isMe ? ch.bubbleMe : [ch.bubblePartner, { borderColor: slotColor.border }],
@@ -511,23 +1421,24 @@ export function ChatScreen() {
                                 </Text>
                               </View>
                             ) : (
-                              <Text style={[ch.messageText, isMe ? ch.textMe : ch.textPartner]}>
-                                {decryptedContent}
-                              </Text>
+                              renderMessageContent(decryptedContent, isMe, handleOpenDoc)
                             )}
                             
-                            {/* Integrated E2E lock security badge, sender name & timestamp */}
                             <View style={{ flexDirection: 'row', alignSelf: 'flex-end', alignItems: 'center', gap: 4, marginTop: 4 }}>
                               <Text style={[ch.messageSender, { color: isMe ? 'rgba(255,255,255,0.6)' : slotColor.fg }]}>
                                 {isMe ? 'YOU' : (senderProfile?.displayName || `Founder ${msg.senderShort}`)}
                               </Text>
-                              <Text style={{ fontSize: 8, color: isMe ? 'rgba(255,255,255,0.4)' : colors.fg6 }}>·</Text>
-                              <Icon name="lock" size={8} color={isMe ? 'rgba(255,255,255,0.45)' : colors.fg6} />
+                              {isE2E && (
+                                <>
+                                  <Text style={{ fontSize: 8, color: isMe ? 'rgba(255,255,255,0.4)' : colors.fg6 }}>·</Text>
+                                  <Icon name="lock" size={8} color={isMe ? 'rgba(255,255,255,0.45)' : colors.fg6} />
+                                </>
+                              )}
                               <Text style={[ch.messageTime, isMe ? ch.timeMe : ch.timePartner]}>
                                 {msg.timestamp}
                               </Text>
                             </View>
-                          </View>
+                          </TouchableOpacity>
                         </View>
                       </View>
                     )}
@@ -539,9 +1450,9 @@ export function ChatScreen() {
         </ScrollView>
 
         {/* Input Bar & Autocomplete overlays */}
-        <View style={[ch.inputWrapper, { marginBottom: keyboardVisible ? 8 : (12 + bottomInset + 64 + 4) }]}>
+        <View style={[ch.inputWrapper, { marginBottom: keyboardVisible ? 8 : (12 + bottomInset) }]}>
           
-          {/* 1. Slash Commands Autocomplete Overlay */}
+          {/* Slash Commands autocomplete */}
           {showCommands && filteredCommands.length > 0 && (
             <Card tight style={ch.autocompleteCard}>
               <Text style={ch.autocompleteHeader}>SLASH COMMANDS</Text>
@@ -553,8 +1464,7 @@ export function ChatScreen() {
                     idx < filteredCommands.length - 1 && { borderBottomWidth: 1, borderBottomColor: colors.border06 }
                   ]}
                   onPress={() => {
-                    setText(item.cmd);
-                    setShowCommands(false);
+                    handleTextChange(item.cmd);
                   }}
                 >
                   <Icon name={item.icon as any} size={12} color={colors.foreground} />
@@ -567,7 +1477,7 @@ export function ChatScreen() {
             </Card>
           )}
 
-          {/* 2. Co-Founder Mentions Autocomplete Overlay */}
+          {/* Co-founder mentions autocomplete */}
           {showMentions && filteredProfiles.length > 0 && (
             <Card tight style={ch.autocompleteCard}>
               <Text style={ch.autocompleteHeader}>MENTION TEAM</Text>
@@ -590,10 +1500,68 @@ export function ChatScreen() {
             </Card>
           )}
 
+          {/* Docs/attachments autocomplete */}
+          {showDocs && docAutocompleteItems.length > 0 && (
+            <Card tight style={ch.autocompleteCard}>
+              <Text style={ch.autocompleteHeader}>ATTACH DOCUMENTS & FILES</Text>
+              <ScrollView style={{ maxHeight: 200 }} keyboardShouldPersistTaps="handled">
+                {docAutocompleteItems.map((item, idx) => (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={[
+                      ch.autocompleteRow,
+                      idx < docAutocompleteItems.length - 1 && { borderBottomWidth: 1, borderBottomColor: colors.border06 }
+                    ]}
+                    onPress={() => handleSelectDocItem(item)}
+                  >
+                    <View style={ch.channelIconContainer}>
+                      <Icon name={item.type === 'doc' ? 'book' : 'note'} size={14} color={colors.foreground} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={ch.mentionName}>{item.title}</Text>
+                      <Text style={ch.mentionRole}>{item.subtitle}</Text>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </Card>
+          )}
+
+          {/* Parameter Autocomplete overlay */}
+          {showParams && paramAutocompleteItems.length > 0 && (
+            <Card tight style={ch.autocompleteCard}>
+              <Text style={ch.autocompleteHeader}>
+                {activeParamField 
+                  ? `SELECT VALUE FOR ${activeParamField.toUpperCase()}`
+                  : `${paramType!.toUpperCase()} PARAMETERS`}
+              </Text>
+              <ScrollView style={{ maxHeight: 200 }} keyboardShouldPersistTaps="handled">
+                {paramAutocompleteItems.map((item, idx) => (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={[
+                      ch.autocompleteRow,
+                      idx < paramAutocompleteItems.length - 1 && { borderBottomWidth: 1, borderBottomColor: colors.border06 }
+                    ]}
+                    onPress={() => handleSelectParamItem(item)}
+                  >
+                    <View style={ch.channelIconContainer}>
+                      <Icon name={item.icon} size={14} color={colors.foreground} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={ch.mentionName}>{item.title}</Text>
+                      <Text style={ch.mentionRole}>{item.subtitle}</Text>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </Card>
+          )}
+
           <View style={ch.inputContainer}>
             <TextInput
               style={ch.input}
-              placeholder="Message co-founders or use /todo, /event..."
+              placeholder={isE2E ? "Send secure message or use /todo, /event..." : "Send public message..."}
               placeholderTextColor={colors.fg6}
               value={text}
               onChangeText={handleTextChange}
@@ -623,6 +1591,147 @@ const ch = StyleSheet.create({
     flex: 1,
     backgroundColor: '#fff',
   },
+  createBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 32,
+    paddingHorizontal: 12,
+    backgroundColor: colors.foreground,
+    borderRadius: radius.md,
+    ...shadows.sm,
+  },
+  createBtnText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 10,
+    fontFamily: 'Courier',
+    letterSpacing: 1.5,
+  },
+  channelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    gap: 14,
+  },
+  channelIconContainer: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: colors.bgTint04,
+    borderWidth: 1,
+    borderColor: colors.border08,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  channelNameText: {
+    fontWeight: '800',
+    fontSize: 15,
+    letterSpacing: -0.2,
+    color: colors.fg1,
+  },
+  channelSnippetText: {
+    fontSize: 12.5,
+    color: colors.fg5,
+  },
+  lockPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderRadius: 9999,
+  },
+  lockPillText: {
+    fontFamily: 'Courier',
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  lockPillLocked: {
+    borderColor: colors.border08,
+    backgroundColor: colors.bgTint02,
+    color: colors.fg5,
+  },
+  lockPillUnlocked: {
+    borderColor: 'rgba(75,85,99,0.2)',
+    backgroundColor: 'rgba(75,85,99,0.06)',
+    color: '#4B5563',
+  },
+  backHeader: {
+    position: 'absolute',
+    top: 50,
+    left: 20,
+    right: 20,
+    zIndex: 100,
+  },
+  unlockBackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'flex-start',
+    paddingVertical: 8,
+  },
+  backBtnText: {
+    fontFamily: 'Courier',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+    color: '#fff',
+  },
+  activeHeaderBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 52 : 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border06,
+    backgroundColor: '#fff',
+    gap: 12,
+  },
+  headerBackBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: colors.bgTint04,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.border08,
+  },
+  activeChannelTitle: {
+    fontWeight: '900',
+    fontSize: 18,
+    letterSpacing: -0.4,
+    color: colors.fg1,
+  },
+  activeChannelSub: {
+    fontFamily: 'Courier',
+    fontSize: 8,
+    fontWeight: '800',
+    color: colors.fg5,
+    letterSpacing: 1,
+  },
+  headerLockBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderColor: colors.border12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.md,
+    backgroundColor: colors.bgTint02,
+  },
+  headerLockBtnText: {
+    fontFamily: 'Courier',
+    fontSize: 9,
+    fontWeight: '800',
+    color: colors.foreground,
+    letterSpacing: 1,
+  },
   emptyText: {
     fontFamily: 'Courier',
     fontSize: 11,
@@ -642,21 +1751,6 @@ const ch = StyleSheet.create({
   },
   rowRight: {
     justifyContent: 'flex-end',
-  },
-  senderName: {
-    fontSize: 10,
-    fontFamily: 'Courier',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    color: colors.foreground,
-    fontWeight: '800',
-  },
-  senderRole: {
-    fontSize: 9,
-    fontFamily: 'Courier',
-    textTransform: 'uppercase',
-    color: colors.fg5,
-    letterSpacing: 0.5,
   },
   bubble: {
     paddingHorizontal: 14,
@@ -912,25 +2006,6 @@ const ch = StyleSheet.create({
     fontFamily: 'Courier',
     marginBottom: 8,
   },
-  lockHeaderBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    borderWidth: 1,
-    borderColor: colors.border12,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: radius.md,
-    backgroundColor: colors.bgTint02,
-    marginTop: 4,
-  },
-  lockHeaderBtnText: {
-    fontFamily: 'Courier',
-    fontSize: 9,
-    fontWeight: '800',
-    color: colors.foreground,
-    letterSpacing: 1,
-  },
   dateHeaderContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -960,5 +2035,34 @@ const ch = StyleSheet.create({
     color: colors.fg5,
     letterSpacing: 1.5,
     textAlign: 'center',
+  },
+  attachmentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginVertical: 4,
+  },
+  attachmentChipMe: {
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderColor: 'rgba(255,255,255,0.25)',
+  },
+  attachmentChipPartner: {
+    backgroundColor: colors.bgTint04,
+    borderColor: colors.border08,
+  },
+  attachmentChipLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    maxWidth: 160,
+  },
+  attachmentChipType: {
+    fontSize: 8,
+    fontFamily: 'Courier',
+    fontWeight: '800',
+    letterSpacing: 1,
   },
 });
