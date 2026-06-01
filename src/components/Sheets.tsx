@@ -293,30 +293,58 @@ function SheetShell({ visible, onClose, children }: { visible: boolean; onClose:
 export function EventSheet() {
   const { state, dispatch } = useStore();
   const [rescheduling, setRescheduling] = useState(false);
+  const [showReschedule, setShowReschedule] = useState(false);
   const profiles = state.profiles;
   const visible = state.modal?.kind === 'event';
   const ev = state.modal?.kind === 'event' ? state.modal.ev : null;
+
+  const eventDay = ev?.day ?? toLocalISO(new Date());
+  const [rescheduleDate, setRescheduleDate] = useState(eventDay);
+  const [rescheduleStart, setRescheduleStart] = useState(ev?.start ?? '09:00');
+  const [rescheduleEnd, setRescheduleEnd] = useState(ev?.end ?? '10:00');
+
+  // Sync picker defaults when a new event opens
+  useEffect(() => {
+    if (ev) {
+      setRescheduleDate(ev.day ?? toLocalISO(new Date()));
+      setRescheduleStart(ev.start);
+      setRescheduleEnd(ev.end);
+      setShowReschedule(false);
+    }
+  }, [ev?.id]);
+
   if (!ev) return null;
   const event = ev;
   const viewer = state.viewer;
   const hidden = event.priv && event.who !== 'B' && event.who !== viewer;
 
-  async function shiftEvent(deltaMinutes: number) {
+  const reschedDateOptions = buildRescheduleDateOptions();
+
+  function applyPreset(deltaDays: number) {
+    const base = dateFromLocalISO(eventDay);
+    base.setDate(base.getDate() + deltaDays);
+    setRescheduleDate(toLocalISO(base));
+  }
+
+  async function confirmReschedule() {
     if (hidden || rescheduling) return;
-    const next = shiftedEventTime(event, deltaMinutes);
+    if (!/^\d{2}:\d{2}$/.test(rescheduleStart) || !/^\d{2}:\d{2}$/.test(rescheduleEnd)) {
+      Alert.alert('Invalid time', 'Enter time as HH:MM');
+      return;
+    }
     setRescheduling(true);
-    const previous = { start: event.start, end: event.end, day: event.day ?? toLocalISO(new Date()) };
-    dispatch({ t: 'rescheduleEvent', id: event.id, start: next.start, end: next.end, day: next.day });
+    const previous = { start: event.start, end: event.end, day: eventDay };
+    dispatch({ t: 'rescheduleEvent', id: event.id, start: rescheduleStart, end: rescheduleEnd, day: rescheduleDate });
 
     const { error } = await supabase.from('events').update({
-      start_time: `${next.start}:00`,
-      end_time: `${next.end}:00`,
-      event_date: next.day,
+      start_time: `${rescheduleStart}:00`,
+      end_time: `${rescheduleEnd}:00`,
+      event_date: rescheduleDate,
     }).eq('id', event.id);
 
     if (error) {
       dispatch({ t: 'rescheduleEvent', id: event.id, start: previous.start, end: previous.end, day: previous.day });
-      Alert.alert('Could not update event', error.message);
+      Alert.alert('Could not reschedule', error.message);
       setRescheduling(false);
       return;
     }
@@ -325,15 +353,16 @@ export function EventSheet() {
       const oldNotifId = await AsyncStorage.getItem(REMINDER_NOTIF_KEY(event.id));
       await cancelNotif(oldNotifId);
       const newNotifId = await scheduleNotif(
-        secondsUntil(next.day, next.start, event.reminderOffsetMin),
+        secondsUntil(rescheduleDate, rescheduleStart, event.reminderOffsetMin),
         'Event reminder',
-        `${event.title} at ${next.start}`,
+        `${event.title} at ${rescheduleStart}`,
       );
       if (newNotifId) await AsyncStorage.setItem(REMINDER_NOTIF_KEY(event.id), newNotifId);
       else await AsyncStorage.removeItem(REMINDER_NOTIF_KEY(event.id));
     }
 
     setRescheduling(false);
+    setShowReschedule(false);
   }
 
   return (
@@ -407,38 +436,117 @@ export function EventSheet() {
         </View>
       </View>
 
+      {/* ── Reschedule section ── */}
       {!hidden && (
-        <View style={{ marginBottom: 12, gap: 8 }}>
-          <View style={S.row}>
-            <Text style={{ fontSize: 11, fontWeight: '600', letterSpacing: 1, color: colors.fg5, textTransform: 'uppercase', width: 70 }}>Prepone</Text>
-            <View style={[S.row, { flex: 1, gap: 6, flexWrap: 'wrap' }]}>
-              {[{ label: '1 day', delta: -1440 }, { label: '2 days', delta: -2880 }, { label: '1 week', delta: -10080 }, { label: '1 month', delta: -43200 }].map(opt => (
-                <TouchableOpacity
-                  key={opt.label}
-                  style={[sh.btnOutline, { paddingVertical: 5, paddingHorizontal: 10 }]}
-                  onPress={() => shiftEvent(opt.delta)}
-                  disabled={rescheduling}
-                >
-                  <Text style={[sh.btnOutlineTxt, { fontSize: 12 }]}>{opt.label}</Text>
-                </TouchableOpacity>
-              ))}
+        <View style={{ marginBottom: 12 }}>
+          <TouchableOpacity
+            style={[sh.btnOutline, { marginBottom: showReschedule ? 12 : 0 }]}
+            onPress={() => setShowReschedule(v => !v)}
+          >
+            <Text style={sh.btnOutlineTxt}>{showReschedule ? 'Cancel reschedule' : 'Reschedule'}</Text>
+          </TouchableOpacity>
+
+          {showReschedule && (
+            <View style={{ gap: 14 }}>
+              {/* Presets */}
+              <View>
+                <Text style={[sh.fieldLabel, { marginBottom: 6 }]}>PRESETS</Text>
+                <View style={[S.row, { flexWrap: 'wrap', gap: 6 }]}>
+                  {[
+                    { label: 'Tomorrow', days: 1 },
+                    { label: '+2 days',  days: 2 },
+                    { label: '+1 week',  days: 7 },
+                    { label: '+2 weeks', days: 14 },
+                    { label: '+1 month', days: 30 },
+                    { label: '−1 day',   days: -1 },
+                    { label: '−1 week',  days: -7 },
+                  ].map(p => {
+                    const base = dateFromLocalISO(eventDay);
+                    base.setDate(base.getDate() + p.days);
+                    const iso = toLocalISO(base);
+                    const active = rescheduleDate === iso;
+                    return (
+                      <TouchableOpacity
+                        key={p.label}
+                        onPress={() => applyPreset(p.days)}
+                        style={{
+                          height: 30, paddingHorizontal: 12, borderRadius: 9999,
+                          justifyContent: 'center', borderWidth: 1,
+                          backgroundColor: active ? colors.foreground : colors.bgTint04,
+                          borderColor: active ? colors.foreground : colors.border08,
+                        }}
+                      >
+                        <Text style={{ fontFamily: 'Courier', fontSize: 10, letterSpacing: 1, textTransform: 'uppercase',
+                          color: active ? '#fff' : colors.fg3 }}>{p.label}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
+              {/* Date strip */}
+              <View>
+                <Text style={[sh.fieldLabel, { marginBottom: 6 }]}>DATE</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                  {reschedDateOptions.map(o => {
+                    const active = rescheduleDate === o.iso;
+                    return (
+                      <TouchableOpacity
+                        key={o.iso}
+                        onPress={() => setRescheduleDate(o.iso)}
+                        style={{
+                          height: 32, paddingHorizontal: 12, borderRadius: 9999,
+                          justifyContent: 'center', borderWidth: 1,
+                          backgroundColor: active ? colors.foreground : colors.bgTint04,
+                          borderColor: active ? colors.foreground : colors.border08,
+                        }}
+                      >
+                        <Text style={{ fontFamily: 'Courier', fontSize: 10, letterSpacing: 1.2, textTransform: 'uppercase',
+                          color: active ? '#fff' : colors.fg3 }}>{o.label}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+
+              {/* Time inputs */}
+              <View style={S.row}>
+                <View style={[sh.field, { flex: 1, marginRight: 5 }]}>
+                  <Text style={sh.fieldLabel}>START TIME</Text>
+                  <TextInput
+                    style={sh.fieldInput}
+                    value={rescheduleStart}
+                    onChangeText={setRescheduleStart}
+                    placeholder="HH:MM"
+                    placeholderTextColor={colors.fg6}
+                    keyboardType="numbers-and-punctuation"
+                  />
+                </View>
+                <View style={[sh.field, { flex: 1, marginLeft: 5 }]}>
+                  <Text style={sh.fieldLabel}>END TIME</Text>
+                  <TextInput
+                    style={sh.fieldInput}
+                    value={rescheduleEnd}
+                    onChangeText={setRescheduleEnd}
+                    placeholder="HH:MM"
+                    placeholderTextColor={colors.fg6}
+                    keyboardType="numbers-and-punctuation"
+                  />
+                </View>
+              </View>
+
+              {/* Confirm */}
+              <TouchableOpacity
+                style={[sh.btnPrimary, rescheduling && { opacity: 0.5 }]}
+                onPress={confirmReschedule}
+                disabled={rescheduling}
+              >
+                {rescheduling
+                  ? <ActivityIndicator color="#fff" size="small" />
+                  : <Text style={sh.btnPrimaryTxt}>Confirm reschedule</Text>}
+              </TouchableOpacity>
             </View>
-          </View>
-          <View style={S.row}>
-            <Text style={{ fontSize: 11, fontWeight: '600', letterSpacing: 1, color: colors.fg5, textTransform: 'uppercase', width: 70 }}>Postpone</Text>
-            <View style={[S.row, { flex: 1, gap: 6, flexWrap: 'wrap' }]}>
-              {[{ label: '1 day', delta: 1440 }, { label: '2 days', delta: 2880 }, { label: '1 week', delta: 10080 }, { label: '1 month', delta: 43200 }].map(opt => (
-                <TouchableOpacity
-                  key={opt.label}
-                  style={[sh.btnOutline, { paddingVertical: 5, paddingHorizontal: 10 }]}
-                  onPress={() => shiftEvent(opt.delta)}
-                  disabled={rescheduling}
-                >
-                  <Text style={[sh.btnOutlineTxt, { fontSize: 12 }]}>{opt.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
+          )}
         </View>
       )}
 
@@ -450,7 +558,6 @@ export function EventSheet() {
             [
               { text: 'Cancel', style: 'cancel' },
               { text: 'Delete', style: 'destructive', onPress: async () => {
-                // cancel any pending reminder notification
                 const notifId = await AsyncStorage.getItem(REMINDER_NOTIF_KEY(ev.id));
                 await cancelNotif(notifId);
                 await AsyncStorage.removeItem(REMINDER_NOTIF_KEY(ev.id));
@@ -508,6 +615,23 @@ function buildDateOptions(): { iso: string; label: string }[] {
     const iso = toLocalISO(d);
     let label: string;
     if (i === 0) label = 'TODAY';
+    else if (i === 1) label = 'TOMORROW';
+    else label = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }).toUpperCase();
+    options.push({ iso, label });
+  }
+  return options;
+}
+
+function buildRescheduleDateOptions(): { iso: string; label: string }[] {
+  const options: { iso: string; label: string }[] = [];
+  const today = new Date();
+  for (let i = -7; i <= 60; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() + i);
+    const iso = toLocalISO(d);
+    let label: string;
+    if (i === -1) label = 'YESTERDAY';
+    else if (i === 0) label = 'TODAY';
     else if (i === 1) label = 'TOMORROW';
     else label = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }).toUpperCase();
     options.push({ iso, label });
