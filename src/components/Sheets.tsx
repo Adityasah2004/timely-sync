@@ -408,21 +408,37 @@ export function EventSheet() {
       </View>
 
       {!hidden && (
-        <View style={[S.row, { gap: 10, marginBottom: 12 }]}>
-          <TouchableOpacity
-            style={sh.btnOutline}
-            onPress={() => shiftEvent(-15)}
-            disabled={rescheduling}
-          >
-            <Text style={sh.btnOutlineTxt}>Prepone 15m</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={sh.btnOutline}
-            onPress={() => shiftEvent(15)}
-            disabled={rescheduling}
-          >
-            <Text style={sh.btnOutlineTxt}>Postpone 15m</Text>
-          </TouchableOpacity>
+        <View style={{ marginBottom: 12, gap: 8 }}>
+          <View style={S.row}>
+            <Text style={{ fontSize: 11, fontWeight: '600', letterSpacing: 1, color: colors.fg5, textTransform: 'uppercase', width: 70 }}>Prepone</Text>
+            <View style={[S.row, { flex: 1, gap: 6, flexWrap: 'wrap' }]}>
+              {[{ label: '1 day', delta: -1440 }, { label: '2 days', delta: -2880 }, { label: '1 week', delta: -10080 }, { label: '1 month', delta: -43200 }].map(opt => (
+                <TouchableOpacity
+                  key={opt.label}
+                  style={[sh.btnOutline, { paddingVertical: 5, paddingHorizontal: 10 }]}
+                  onPress={() => shiftEvent(opt.delta)}
+                  disabled={rescheduling}
+                >
+                  <Text style={[sh.btnOutlineTxt, { fontSize: 12 }]}>{opt.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+          <View style={S.row}>
+            <Text style={{ fontSize: 11, fontWeight: '600', letterSpacing: 1, color: colors.fg5, textTransform: 'uppercase', width: 70 }}>Postpone</Text>
+            <View style={[S.row, { flex: 1, gap: 6, flexWrap: 'wrap' }]}>
+              {[{ label: '1 day', delta: 1440 }, { label: '2 days', delta: 2880 }, { label: '1 week', delta: 10080 }, { label: '1 month', delta: 43200 }].map(opt => (
+                <TouchableOpacity
+                  key={opt.label}
+                  style={[sh.btnOutline, { paddingVertical: 5, paddingHorizontal: 10 }]}
+                  onPress={() => shiftEvent(opt.delta)}
+                  disabled={rescheduling}
+                >
+                  <Text style={[sh.btnOutlineTxt, { fontSize: 12 }]}>{opt.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
         </View>
       )}
 
