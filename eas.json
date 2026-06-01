@@ -6,25 +6,17 @@
   "build": {
     "preview": {
       "distribution": "internal",
+      "environment": "preview",
       "android": {
         "buildType": "apk"
-      },
-      "env": {
-        "SUPABASE_URL": "$SUPABASE_URL",
-        "SUPABASE_ANON_KEY": "$SUPABASE_ANON_KEY",
-        "EXPO_PUBLIC_GROQ_KEY": "$EXPO_PUBLIC_GROQ_KEY"
       },
       "channel": "preview"
     },
     "production": {
       "distribution": "internal",
+      "environment": "production",
       "android": {
         "buildType": "apk"
-      },
-      "env": {
-        "SUPABASE_URL": "$SUPABASE_URL",
-        "SUPABASE_ANON_KEY": "$SUPABASE_ANON_KEY",
-        "EXPO_PUBLIC_GROQ_KEY": "$EXPO_PUBLIC_GROQ_KEY"
       },
       "channel": "production"
     }

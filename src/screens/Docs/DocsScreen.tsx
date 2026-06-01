@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Alert,
   Linking,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -110,6 +111,7 @@ export function DocsScreen() {
   const [editorMode, setEditorMode] = useState<'write' | 'preview'>('write');
   const [aiEnhancing, setAiEnhancing] = useState(false);
   const [prevContent, setPrevContent] = useState<string | null>(null); // for undo
+  const [keyboardPadding, setKeyboardPadding] = useState(0);
 
   // Custom Tag State inside Editor
   const [newTagText, setNewTagText] = useState('');
@@ -117,6 +119,23 @@ export function DocsScreen() {
   // Voice Memo Recorder Hooks (expo-audio SDK 56)
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder, 1000);
+
+  useEffect(() => {
+    if (!editorOpen || Platform.OS !== 'android') {
+      setKeyboardPadding(0);
+      return;
+    }
+
+    const showSub = Keyboard.addListener('keyboardDidShow', event => {
+      setKeyboardPadding(event.endCoordinates.height);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardPadding(0));
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [editorOpen]);
 
   // Dynamic tags list: defaults + all saved doc tags + any tags on the doc currently being edited
   const allTags = Array.from(
@@ -679,7 +698,7 @@ RULES:
       {/* Full Page Spec Editor Modal */}
       <Modal animationType="slide" visible={editorOpen} onRequestClose={() => setEditorOpen(false)}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={{ flex: 1 }}
         >
           <View style={[dc.modalContainer, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
@@ -704,11 +723,16 @@ RULES:
             </View>
           </View>
 
-          <ScrollView style={{ flex: 1, padding: 18 }}>
+          <ScrollView
+            style={{ flex: 1, padding: 18 }}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ paddingBottom: 18 + keyboardPadding }}
+          >
             <Text style={dc.inputLabel}>Title</Text>
             <TextInput
               style={dc.titleInput}
               placeholder="e.g. PRD: Stripe Subscriptions"
+              placeholderTextColor={colors.fg6}
               value={docTitle}
               onChangeText={setDocTitle}
             />

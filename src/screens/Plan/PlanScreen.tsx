@@ -65,7 +65,7 @@ function profileName(id: string, profiles: import('../../lib/store').ProfileMap)
 
 export function PlanScreen() {
   const { state, dispatch } = useStore();
-  const [day, setDay] = useState<DayName>(todayDayName as DayName);
+  const [day, setDay] = useState<DayName>(todayDayName() as DayName);
   const [filter, setFilter] = useState<string>('ALL');
   const [weekOffset, setWeekOffset] = useState<0 | 1>(0);
   const viewer = state.viewer;

@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, Modal, TouchableOpacity, TouchableWithoutFeedback,
   TextInput, ScrollView, StyleSheet, ActivityIndicator, Alert,
-  KeyboardAvoidingView, Platform,
+  KeyboardAvoidingView, Platform, Keyboard, UIManager, findNodeHandle,
+  type NativeScrollEvent, type NativeSyntheticEvent,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors } from '../lib/tokens';
@@ -13,7 +14,7 @@ import { scheduleNotif, cancelNotif, secondsUntil } from '../lib/notifications';
 import { USER_LIST } from '../data/seed';
 import * as SecureStore from 'expo-secure-store';
 import { deriveKey, encryptText } from '../lib/crypto';
-import type { UserId } from '../lib/types';
+import type { CalEvent, UserId } from '../lib/types';
 
 const REMINDER_NOTIF_KEY = (eventId: string) => `reminder_notif_${eventId}`;
 
@@ -208,29 +209,82 @@ import { Icon } from './Icon';
 
 // ─── Sheet shell ────────────────────────────────────────────
 function SheetShell({ visible, onClose, children }: { visible: boolean; onClose: () => void; children: React.ReactNode }) {
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollYRef = useRef(0);
+  const keyboardTopRef = useRef(0);
+  const [keyboardPadding, setKeyboardPadding] = useState(0);
+
+  const ensureFocusedInputVisible = useCallback((keyboardScreenY?: number) => {
+    const keyboardTop = keyboardScreenY ?? keyboardTopRef.current;
+    if (Platform.OS !== 'android' || !keyboardTop) return;
+    const focusedInput = TextInput.State.currentlyFocusedInput?.();
+    const node = focusedInput ? findNodeHandle(focusedInput as any) : null;
+    if (!node) return;
+
+    UIManager.measureInWindow(node, (_x, y, _width, height) => {
+      const focusedBottom = y + height;
+      const gap = 24;
+      const overlap = focusedBottom - (keyboardTop - gap);
+      if (overlap > 0) {
+        scrollRef.current?.scrollTo({
+          y: scrollYRef.current + overlap,
+          animated: true,
+        });
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!visible || Platform.OS !== 'android') {
+      setKeyboardPadding(0);
+      return;
+    }
+
+    const showSub = Keyboard.addListener('keyboardDidShow', event => {
+      keyboardTopRef.current = event.endCoordinates.screenY;
+      setKeyboardPadding(event.endCoordinates.height);
+      setTimeout(() => ensureFocusedInputVisible(event.endCoordinates.screenY), 60);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      keyboardTopRef.current = 0;
+      setKeyboardPadding(0);
+    });
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [ensureFocusedInputVisible, visible]);
+
+  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    scrollYRef.current = event.nativeEvent.contentOffset.y;
+  };
+
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={{ flex: 1 }}
-      >
-        <TouchableWithoutFeedback onPress={onClose}>
-          <View style={sh.backdrop}>
-            <TouchableWithoutFeedback>
-              <View style={sh.sheet}>
-                <View style={sh.grab} />
-                <ScrollView
-                  showsVerticalScrollIndicator={false}
-                  keyboardShouldPersistTaps="handled"
-                  contentContainerStyle={{ paddingBottom: 40 }}
-                >
-                  {children}
-                </ScrollView>
-              </View>
-            </TouchableWithoutFeedback>
-          </View>
-        </TouchableWithoutFeedback>
-      </KeyboardAvoidingView>
+      <TouchableWithoutFeedback onPress={onClose}>
+        <View style={sh.backdrop}>
+          <TouchableWithoutFeedback>
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              style={sh.sheet}
+            >
+              <View style={sh.grab} />
+              <ScrollView
+                ref={scrollRef}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                onScroll={handleScroll}
+                scrollEventThrottle={16}
+                onTouchEnd={() => setTimeout(() => ensureFocusedInputVisible(), 80)}
+                contentContainerStyle={{ paddingBottom: 18 + keyboardPadding }}
+              >
+                {children}
+              </ScrollView>
+            </KeyboardAvoidingView>
+          </TouchableWithoutFeedback>
+        </View>
+      </TouchableWithoutFeedback>
     </Modal>
   );
 }
@@ -238,12 +292,49 @@ function SheetShell({ visible, onClose, children }: { visible: boolean; onClose:
 // ─── Event detail ────────────────────────────────────────────
 export function EventSheet() {
   const { state, dispatch } = useStore();
+  const [rescheduling, setRescheduling] = useState(false);
   const profiles = state.profiles;
   const visible = state.modal?.kind === 'event';
   const ev = state.modal?.kind === 'event' ? state.modal.ev : null;
   if (!ev) return null;
+  const event = ev;
   const viewer = state.viewer;
-  const hidden = ev.priv && ev.who !== 'B' && ev.who !== viewer;
+  const hidden = event.priv && event.who !== 'B' && event.who !== viewer;
+
+  async function shiftEvent(deltaMinutes: number) {
+    if (hidden || rescheduling) return;
+    const next = shiftedEventTime(event, deltaMinutes);
+    setRescheduling(true);
+    const previous = { start: event.start, end: event.end, day: event.day ?? toLocalISO(new Date()) };
+    dispatch({ t: 'rescheduleEvent', id: event.id, start: next.start, end: next.end, day: next.day });
+
+    const { error } = await supabase.from('events').update({
+      start_time: `${next.start}:00`,
+      end_time: `${next.end}:00`,
+      event_date: next.day,
+    }).eq('id', event.id);
+
+    if (error) {
+      dispatch({ t: 'rescheduleEvent', id: event.id, start: previous.start, end: previous.end, day: previous.day });
+      Alert.alert('Could not update event', error.message);
+      setRescheduling(false);
+      return;
+    }
+
+    if (event.reminderOffsetMin !== null) {
+      const oldNotifId = await AsyncStorage.getItem(REMINDER_NOTIF_KEY(event.id));
+      await cancelNotif(oldNotifId);
+      const newNotifId = await scheduleNotif(
+        secondsUntil(next.day, next.start, event.reminderOffsetMin),
+        'Event reminder',
+        `${event.title} at ${next.start}`,
+      );
+      if (newNotifId) await AsyncStorage.setItem(REMINDER_NOTIF_KEY(event.id), newNotifId);
+      else await AsyncStorage.removeItem(REMINDER_NOTIF_KEY(event.id));
+    }
+
+    setRescheduling(false);
+  }
 
   return (
     <SheetShell visible={visible} onClose={() => dispatch({ t: 'closeModal' })}>
@@ -316,6 +407,25 @@ export function EventSheet() {
         </View>
       </View>
 
+      {!hidden && (
+        <View style={[S.row, { gap: 10, marginBottom: 12 }]}>
+          <TouchableOpacity
+            style={sh.btnOutline}
+            onPress={() => shiftEvent(-15)}
+            disabled={rescheduling}
+          >
+            <Text style={sh.btnOutlineTxt}>Prepone 15m</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={sh.btnOutline}
+            onPress={() => shiftEvent(15)}
+            disabled={rescheduling}
+          >
+            <Text style={sh.btnOutlineTxt}>Postpone 15m</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <View style={[S.row, { gap: 10 }]}>
         <TouchableOpacity style={[sh.btnOutline, { borderColor: colors.destructive }]} onPress={() => {
           Alert.alert(
@@ -343,8 +453,34 @@ export function EventSheet() {
 }
 
 // ─── helpers ────────────────────────────────────────────────
+function dateFromLocalISO(iso: string): Date {
+  const [year, month, day] = iso.split('-').map(Number);
+  return new Date(year, month - 1, day);
+}
+
 function toLocalISO(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function hmFromDate(d: Date): string {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function shiftedEventTime(ev: CalEvent, deltaMinutes: number): { start: string; end: string; day: string } {
+  const base = dateFromLocalISO(ev.day ?? toLocalISO(new Date()));
+  const [startH, startM] = ev.start.split(':').map(Number);
+  const [endH, endM] = ev.end.split(':').map(Number);
+  const start = new Date(base);
+  start.setHours(startH, startM + deltaMinutes, 0, 0);
+  const end = new Date(base);
+  end.setHours(endH, endM + deltaMinutes, 0, 0);
+  if (end <= start) end.setDate(end.getDate() + 1);
+
+  return {
+    start: hmFromDate(start),
+    end: hmFromDate(end),
+    day: toLocalISO(start),
+  };
 }
 
 function buildDateOptions(): { iso: string; label: string }[] {

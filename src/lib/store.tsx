@@ -59,6 +59,7 @@ type Action =
   | { t: 'addTodo'; todo: Omit<Todo, 'id' | 'done'> }
   | { t: 'addAlarm'; alarm: Omit<Alarm, 'id' | 'on'> }
   | { t: 'togglePriv'; v: boolean }
+  | { t: 'rescheduleEvent'; id: string; start: string; end: string; day: string }
   | { t: 'tick'; clock: Date }
   | { t: 'setSession'; session: Session | null; userId: string | null }
   | { t: 'setHousehold'; householdId: string | null }
@@ -129,6 +130,17 @@ function reducer(s: AppState, a: Action): AppState {
     case 'togglePriv': {
       if (s.modal?.kind !== 'event') return s;
       return { ...s, modal: { ...s.modal, ev: { ...s.modal.ev, priv: a.v } } };
+    }
+    case 'rescheduleEvent': {
+      const updateEvent = (ev: CalEvent): CalEvent =>
+        ev.id === a.id ? { ...ev, start: a.start, end: a.end, day: a.day } : ev;
+      return {
+        ...s,
+        events: s.events.map(updateEvent),
+        modal: s.modal?.kind === 'event' && s.modal.ev.id === a.id
+          ? { kind: 'event', ev: updateEvent(s.modal.ev) }
+          : s.modal,
+      };
     }
     case 'tick':               return { ...s, clock: a.clock };
     case 'setSession':         return { ...s, session: a.session, userId: a.userId };

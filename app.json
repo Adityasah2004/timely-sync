@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Timely",
-    "slug": "timely",
+    "name": "Timely Sync",
+    "slug": "timely-sync",
     "version": "1.1.3",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -42,17 +42,12 @@
       "expo-audio",
       "expo-asset"
     ],
-    "extra": {
-      "supabaseUrl": "$SUPABASE_URL",
-      "supabaseAnonKey": "$SUPABASE_ANON_KEY",
-      "eas": {
-        "projectId": "728740c4-728f-4a2f-86c7-0ffea7bf253c"
-      }
-    },
     "owner": "adityasah04",
     "runtimeVersion": "1.1.3",
-    "updates": {
-      "url": "https://u.expo.dev/728740c4-728f-4a2f-86c7-0ffea7bf253c"
+    "extra": {
+      "eas": {
+        "projectId": "8a6910cd-0bdc-4661-a960-ef0e6805baad"
+      }
     }
   }
 }
