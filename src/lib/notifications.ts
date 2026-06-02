@@ -4,7 +4,6 @@ import Constants from 'expo-constants';
 const IS_EXPO_GO = Constants.executionEnvironment === 'storeClient';
 
 function getN() {
-  if (IS_EXPO_GO) return null;
   try {
     return require('expo-notifications') as typeof import('expo-notifications');
   } catch {
