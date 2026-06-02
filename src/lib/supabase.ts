@@ -69,6 +69,10 @@ export interface DbTodo {
   priority: 1 | 2 | 3;
   assigned_to: string[] | null;
   parent_id: string | null;
+  status?: string;
+  project_name?: string;
+  notes?: string;
+  estimated_hours?: number | null;
   created_at: string;
   updated_at: string;
 }

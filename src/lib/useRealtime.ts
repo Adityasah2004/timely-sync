@@ -22,6 +22,7 @@ interface DbDoc {
   tags: string[];
   attachments?: any[];
   created_by: string | null;
+  is_favorite?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -52,6 +53,10 @@ function dbTodo(r: DbTodo): Todo {
     p: r.priority as 1 | 2 | 3,
     assignedTo: Array.isArray(r.assigned_to) && r.assigned_to.length > 0 ? r.assigned_to as UserId[] : null,
     parentId: r.parent_id,
+    status: (r.status as any) ?? (r.is_done ? 'DONE' : 'TODO'),
+    projectName: r.project_name ?? 'General',
+    notes: r.notes ?? '',
+    estimatedHours: r.estimated_hours ?? undefined,
   };
 }
 
@@ -100,6 +105,7 @@ function dbDoc(r: DbDoc): StartupDoc {
     attachments: Array.isArray(r.attachments) ? r.attachments : [],
     createdBy: r.created_by,
     updatedAt: r.updated_at,
+    isFavorite: r.is_favorite ?? false,
   };
 }
 
@@ -140,15 +146,21 @@ export function useRealtime({ householdId, onEvents, onTodos, onAlarms, onActivi
   const fetchAll = useCallback(async () => {
     if (!householdId) return;
 
-    // Always fetch a 14-day rolling window so planned-ahead events are visible
+    // Fetch events starting from Monday of the current week to show past events on the plan,
+    // through to a 14-day rolling window into the future so planned-ahead events are visible.
     const today = new Date();
+    const dow = today.getDay(); // 0=Sun
+    const mondayOffset = dow === 0 ? -6 : 1 - dow;
+    const monday = new Date(today);
+    monday.setDate(today.getDate() + mondayOffset);
+
     const fmt = (d: Date) => {
       const y = d.getFullYear();
       const m = String(d.getMonth() + 1).padStart(2, '0');
       const day = String(d.getDate()).padStart(2, '0');
       return `${y}-${m}-${day}`;
     };
-    const from = fmt(today);
+    const from = fmt(monday);
     const future = new Date(today);
     future.setDate(today.getDate() + 13);
     const toDate = fmt(future);

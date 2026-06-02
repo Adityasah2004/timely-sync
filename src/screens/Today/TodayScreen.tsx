@@ -25,11 +25,40 @@ export function TodayScreen() {
   // All slots that have a real profile in this household
   const activeSlots = USER_LIST.filter(u => state.profiles[u]);
 
+  // Utility to format Date to YYYY-MM-DD
+  const fmt = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const todayISO = fmt(now);
+  
+  const tomorrowDate = new Date(now);
+  tomorrowDate.setDate(now.getDate() + 1);
+  const tomorrowISO = fmt(tomorrowDate);
+
   const events = state.events;
   const visible = events.filter(e => !(e.priv && e.who !== 'B' && e.who !== viewer));
-  const upcoming = visible.filter(e => toMins(e.end) > nowMin);
-  const current = visible.find(e => toMins(e.start) <= nowMin && toMins(e.end) > nowMin);
-  const next = upcoming.find(e => toMins(e.start) > nowMin);
+  
+  // NOW card matches strictly today's date
+  const current = visible.find(e => e.day === todayISO && toMins(e.start) <= nowMin && toMins(e.end) > nowMin);
+  const nextToday = visible.filter(e => e.day === todayISO && toMins(e.start) > nowMin).sort((a, b) => toMins(a.start) - toMins(b.start));
+  const next = nextToday[0] || null;
+
+  // Up Next grouping
+  const todayEvents = visible.filter(e => e.day === todayISO && toMins(e.end) > nowMin).sort((a, b) => toMins(a.start) - toMins(b.start));
+  const tomorrowEvents = visible.filter(e => e.day === tomorrowISO).sort((a, b) => toMins(a.start) - toMins(b.start));
+  const laterEvents = visible.filter(e => e.day && e.day > tomorrowISO).sort((a, b) => {
+    if (a.day !== b.day) return a.day!.localeCompare(b.day!);
+    return toMins(a.start) - toMins(b.start);
+  });
+
+  const totalUpcomingCount = todayEvents.length + tomorrowEvents.length + laterEvents.length;
+
+  const todayTotal = visible.filter(e => e.day === todayISO);
+  const todayDoneCount = todayTotal.length - todayEvents.length;
 
   const sharedTodos = state.todos.filter(t => t.shared);
   const openShared = sharedTodos.filter(t => !t.done);
@@ -42,7 +71,7 @@ export function TodayScreen() {
         eyebrow={`TIMELY · ${myName.toUpperCase()}'S PHONE`}
         title="Hi,"
         ghost={`${myName}.`}
-        sub={`${openShared.length} shared task${openShared.length === 1 ? '' : 's'} open. ${visible.length - upcoming.length}/${visible.length} done.`}
+        sub={`${openShared.length} shared task${openShared.length === 1 ? '' : 's'} open. ${todayDoneCount}/${todayTotal.length} done today.`}
       />
 
       {/* NOW card */}
@@ -150,16 +179,48 @@ export function TodayScreen() {
       })()}
 
       {/* Up next */}
-      <SecLabel count={Math.min(4, upcoming.length)} right={
+      <SecLabel count={totalUpcomingCount} right={
         <TouchableOpacity style={{ width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: colors.bgTint04, borderWidth: 1, borderColor: colors.border08 }}
           onPress={() => dispatch({ t: 'tab', tab: 'plan' })}>
           <Icon name="chev" size={12} />
         </TouchableOpacity>
       }>Up next</SecLabel>
-      <View style={{ gap: 8, marginBottom: 24 }}>
-        {upcoming.slice(0, 4).map(ev => (
-          <EventRow key={ev.id} ev={ev} viewer={viewer} onPress={() => dispatch({ t: 'openEvent', ev })} />
-        ))}
+      <View style={{ gap: 14, marginBottom: 24 }}>
+        {/* Today Events */}
+        {todayEvents.length > 0 && (
+          <View style={{ gap: 6 }}>
+            <Text style={{ fontFamily: 'Courier', fontSize: 9, textTransform: 'uppercase', letterSpacing: 1.8, color: colors.fg5, paddingLeft: 4 }}>Today</Text>
+            {todayEvents.slice(0, 3).map(ev => (
+              <EventRow key={ev.id} ev={ev} viewer={viewer} onPress={() => dispatch({ t: 'openEvent', ev })} />
+            ))}
+          </View>
+        )}
+
+        {/* Tomorrow Events */}
+        {tomorrowEvents.length > 0 && (
+          <View style={{ gap: 6 }}>
+            <Text style={{ fontFamily: 'Courier', fontSize: 9, textTransform: 'uppercase', letterSpacing: 1.8, color: colors.fg5, paddingLeft: 4 }}>Tomorrow</Text>
+            {tomorrowEvents.slice(0, 3).map(ev => (
+              <EventRow key={ev.id} ev={ev} viewer={viewer} onPress={() => dispatch({ t: 'openEvent', ev })} />
+            ))}
+          </View>
+        )}
+
+        {/* Later Events */}
+        {laterEvents.length > 0 && (
+          <View style={{ gap: 6 }}>
+            <Text style={{ fontFamily: 'Courier', fontSize: 9, textTransform: 'uppercase', letterSpacing: 1.8, color: colors.fg5, paddingLeft: 4 }}>Later</Text>
+            {laterEvents.slice(0, 3).map(ev => (
+              <EventRow key={ev.id} ev={ev} viewer={viewer} onPress={() => dispatch({ t: 'openEvent', ev })} />
+            ))}
+          </View>
+        )}
+
+        {totalUpcomingCount === 0 && (
+          <CardAlt style={{ padding: 20, alignItems: 'center' }}>
+            <Text style={{ fontSize: 11, color: colors.fg6, fontFamily: 'Courier', textTransform: 'uppercase', letterSpacing: 1 }}>No upcoming events</Text>
+          </CardAlt>
+        )}
       </View>
 
       {/* Shared to-dos */}

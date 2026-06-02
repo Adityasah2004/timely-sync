@@ -44,6 +44,10 @@ export interface Todo {
   p: 1 | 2 | 3;
   assignedTo?: UserId[] | null;
   parentId?: string | null;
+  status: 'TODO' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE';
+  projectName?: string;
+  notes?: string;
+  estimatedHours?: number;
 }
 
 export interface ChatChannel {
@@ -116,6 +120,7 @@ export interface StartupDoc {
   attachments: DocAttachment[];
   createdBy: string | null;
   updatedAt: string; // ISO
+  isFavorite: boolean;
 }
 
 export type TabName = 'today' | 'plan' | 'todos' | 'chat' | 'docs' | 'you' | 'notifications';
@@ -123,7 +128,7 @@ export type TabName = 'today' | 'plan' | 'todos' | 'chat' | 'docs' | 'you' | 'no
 export type ModalKind =
   | { kind: 'event'; ev: CalEvent }
   | { kind: 'addEvent' }
-  | { kind: 'addTodo' }
+  | { kind: 'addTodo'; initialStatus?: 'TODO' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE' }
   | { kind: 'addAlarm' }
   | { kind: 'addDoc' }
   | { kind: 'doc'; doc: StartupDoc }

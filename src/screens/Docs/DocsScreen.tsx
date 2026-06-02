@@ -113,6 +113,9 @@ export function DocsScreen() {
   const [prevContent, setPrevContent] = useState<string | null>(null); // for undo
   const [keyboardPadding, setKeyboardPadding] = useState(0);
 
+  // Doc favorite local state
+  const [docIsFavorite, setDocIsFavorite] = useState(false);
+
   // Custom Tag State inside Editor
   const [newTagText, setNewTagText] = useState('');
 
@@ -146,13 +149,18 @@ export function DocsScreen() {
     ])
   );
 
-  // Filtered documents
+  // Filtered and Sorted documents: favorites always sit on top
   const filteredDocs = state.docs.filter(doc => {
     const matchesSearch =
       doc.title.toLowerCase().includes(search.toLowerCase()) ||
       doc.content.toLowerCase().includes(search.toLowerCase());
     const matchesTag = selectedTag ? doc.tags.includes(selectedTag) : true;
     return matchesSearch && matchesTag;
+  }).sort((a, b) => {
+    const aFav = a.isFavorite ? 1 : 0;
+    const bFav = b.isFavorite ? 1 : 0;
+    if (aFav !== bFav) return bFav - aFav; // favorited sits on top
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(); // newest firststable sort
   });
 
   const openEditor = (doc?: StartupDoc) => {
@@ -162,12 +170,14 @@ export function DocsScreen() {
       setDocContent(doc.content);
       setDocTags(doc.tags);
       setDocAttachments(doc.attachments || []);
+      setDocIsFavorite(doc.isFavorite || false);
     } else {
       setEditingDoc(null);
       setDocTitle('');
       setDocContent('');
       setDocTags(['spec']);
       setDocAttachments([]);
+      setDocIsFavorite(false);
     }
     setNewTagText('');
     setEditorMode('write');
@@ -517,6 +527,7 @@ RULES:
             content: docContent.trim(),
             tags: docTags,
             attachments: docAttachments,
+            is_favorite: docIsFavorite,
             updated_at: new Date().toISOString(),
           })
           .eq('id', editingDoc.id);
@@ -531,6 +542,7 @@ RULES:
           tags: docTags,
           attachments: docAttachments,
           created_by: state.userId,
+          is_favorite: docIsFavorite,
         });
 
         if (error) throw error;
@@ -648,10 +660,28 @@ RULES:
                 <Card tight>
                   {/* Title + date row */}
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                    <Text style={dc.docTitle} numberOfLines={2}>
-                      {doc.title}
-                    </Text>
-                    <Text style={dc.docDate}>{dateStr}</Text>
+                    <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      {doc.isFavorite && (
+                        <View style={{ backgroundColor: '#FEF3C7', borderColor: '#F59E0B', borderWidth: 0.5, padding: 3, borderRadius: 4 }}>
+                          <Icon name="flag" size={9} color="#F59E0B" />
+                        </View>
+                      )}
+                      <Text style={[dc.docTitle, { flex: 1 }]} numberOfLines={2}>
+                        {doc.title}
+                      </Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Text style={dc.docDate}>{dateStr}</Text>
+                      <TouchableOpacity
+                        onPress={async () => {
+                          const nextFav = !doc.isFavorite;
+                          await supabase.from('docs').update({ is_favorite: nextFav }).eq('id', doc.id);
+                        }}
+                        style={{ padding: 4, borderRadius: 6, backgroundColor: doc.isFavorite ? colors.bgTint05 : 'transparent' }}
+                      >
+                        <Icon name="flag" size={12} color={doc.isFavorite ? '#CA8A04' : colors.fg7} />
+                      </TouchableOpacity>
+                    </View>
                   </View>
 
                   {/* Attachments row — individual filename chips */}
@@ -708,6 +738,9 @@ RULES:
             </IconBtn>
             <Text style={dc.modalTitle}>{editingDoc ? 'Edit Spec' : 'New Spec'}</Text>
             <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+              <IconBtn onPress={() => setDocIsFavorite(!docIsFavorite)} inv={docIsFavorite}>
+                <Icon name="flag" size={14} color={docIsFavorite ? '#fff' : colors.fg2} />
+              </IconBtn>
               {editingDoc && (
                 <IconBtn onPress={() => handleDelete(editingDoc.id)}>
                   <Icon name="trash" size={14} color={colors.destructive} />

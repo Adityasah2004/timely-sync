@@ -47,7 +47,7 @@ type Action =
   | { t: 'openEvent'; ev: CalEvent }
   | { t: 'openAdd' }
   | { t: 'openNewAlarm' }
-  | { t: 'openNewTodo' }
+  | { t: 'openNewTodo'; initialStatus?: 'TODO' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE' }
   | { t: 'openTodoDetail'; todo: Todo }
   | { t: 'openNewDoc' }
   | { t: 'openDoc'; doc: StartupDoc }
@@ -56,6 +56,7 @@ type Action =
   | { t: 'finishOnboard' }
   | { t: 'toggleAlarm'; id: string; v: boolean }
   | { t: 'toggleTodo'; id: string }
+  | { t: 'updateTodo'; id: string; updates: Partial<Todo> }
   | { t: 'addTodo'; todo: Omit<Todo, 'id' | 'done'> }
   | { t: 'addAlarm'; alarm: Omit<Alarm, 'id' | 'on'> }
   | { t: 'togglePriv'; v: boolean }
@@ -108,7 +109,7 @@ function reducer(s: AppState, a: Action): AppState {
     case 'openEvent':     return { ...s, modal: { kind: 'event', ev: a.ev } };
     case 'openAdd':       return { ...s, modal: { kind: 'addEvent' } };
     case 'openNewAlarm':  return { ...s, modal: { kind: 'addAlarm' } };
-    case 'openNewTodo':   return { ...s, modal: { kind: 'addTodo' } };
+    case 'openNewTodo':   return { ...s, modal: { kind: 'addTodo', initialStatus: a.initialStatus } };
     case 'openTodoDetail': return { ...s, modal: { kind: 'todoDetail', todo: a.todo } };
     case 'openNewDoc':    return { ...s, modal: { kind: 'addDoc' } };
     case 'openDoc':       return { ...s, modal: { kind: 'doc', doc: a.doc } };
@@ -116,10 +117,27 @@ function reducer(s: AppState, a: Action): AppState {
     case 'onboard':       return { ...s, showOnboarding: true };
     case 'finishOnboard': return { ...s, showOnboarding: false };
     case 'toggleAlarm':   return { ...s, alarms: s.alarms.map(al => al.id === a.id ? { ...al, on: a.v } : al) };
-    case 'toggleTodo':    return { ...s, todos: s.todos.map(td => td.id === a.id ? { ...td, done: !td.done } : td) };
+    case 'toggleTodo':    return {
+      ...s,
+      todos: s.todos.map(td => td.id === a.id ? { ...td, done: !td.done, status: !td.done ? 'DONE' : 'TODO' } : td)
+    };
+    case 'updateTodo':    return {
+      ...s,
+      todos: s.todos.map(td => td.id === a.id ? { ...td, ...a.updates } : td),
+      modal: s.modal?.kind === 'todoDetail' && s.modal.todo.id === a.id
+        ? { kind: 'todoDetail', todo: { ...s.modal.todo, ...a.updates } }
+        : s.modal,
+    };
     case 'addTodo':       return {
       ...s,
-      todos: [{ id: 'tn' + Date.now(), done: false, ...a.todo } as Todo, ...s.todos],
+      todos: [{
+        id: 'tn' + Date.now(),
+        done: false,
+        status: 'TODO',
+        projectName: 'General',
+        notes: '',
+        ...(a.todo as any)
+      } as Todo, ...s.todos],
       modal: null,
     };
     case 'addAlarm':      return {
@@ -363,17 +381,83 @@ export async function toggleTodoItem(
   dispatch({ t: 'toggleTodo', id: todo.id });
   
   // Persist to Supabase
-  await supabase.from('todos').update({ is_done: nextDone }).eq('id', todo.id);
+  await supabase.from('todos').update({
+    is_done: nextDone,
+    status: nextDone ? 'DONE' : 'TODO'
+  }).eq('id', todo.id);
   
-  // Log activity
+  // Log activity and notify
   if (state.userId && state.householdId) {
+    const actorName = state.profiles[state.viewer]?.displayName ?? 'Someone';
     await writeActivity(
       state.householdId,
       state.userId,
       state.viewer,
       nextDone ? 'completed' : 'unchecked',
       todo.text,
-      'todo'
+      'todo',
+      todo.shared ? {
+        title: nextDone ? `${actorName} completed a task` : `${actorName} unchecked a task`,
+        body: `"${todo.text}"`,
+        forUser: 'B'
+      } : undefined
+    );
+  }
+}
+
+export async function updateTodoItemDetails(
+  todo: Todo,
+  updates: {
+    text?: string;
+    status?: 'TODO' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE';
+    projectName?: string;
+    notes?: string;
+    estimatedHours?: number | null;
+    due?: string;
+  },
+  state: any,
+  dispatch: React.Dispatch<any>
+) {
+  // Optimistically update locally
+  dispatch({ t: 'updateTodo', id: todo.id, updates });
+
+  // Map updates to Supabase schema columns
+  const dbUpdates: any = {};
+  if (updates.text !== undefined) dbUpdates.text = updates.text;
+  if (updates.projectName !== undefined) dbUpdates.project_name = updates.projectName;
+  if (updates.notes !== undefined) dbUpdates.notes = updates.notes;
+  if (updates.estimatedHours !== undefined) dbUpdates.estimated_hours = updates.estimatedHours;
+  if (updates.due !== undefined) dbUpdates.due_label = updates.due;
+  if (updates.status !== undefined) {
+    dbUpdates.status = updates.status;
+    dbUpdates.is_done = updates.status === 'DONE';
+  }
+
+  // Persist to Supabase
+  await supabase.from('todos').update(dbUpdates).eq('id', todo.id);
+
+  // If status changed, log activity and notify
+  if (updates.status !== undefined && updates.status !== todo.status && state.userId && state.householdId) {
+    const statusLabels = {
+      TODO: 'To Do',
+      IN_PROGRESS: 'In Progress',
+      BLOCKED: 'Blocked',
+      DONE: 'Done',
+    };
+    const newStatusLabel = statusLabels[updates.status];
+    const actorName = state.profiles[state.viewer]?.displayName ?? 'Someone';
+    await writeActivity(
+      state.householdId,
+      state.userId,
+      state.viewer,
+      'moved to ' + newStatusLabel.toLowerCase(),
+      todo.text,
+      'todo',
+      todo.shared ? {
+        title: `${actorName} moved a task`,
+        body: `"${todo.text}" moved to ${newStatusLabel}`,
+        forUser: 'B'
+      } : undefined
     );
   }
 }

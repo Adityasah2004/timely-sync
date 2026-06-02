@@ -7,7 +7,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors } from '../lib/tokens';
-import { useStore, toggleTodoItem } from '../lib/store';
+import { useStore, toggleTodoItem, updateTodoItemDetails } from '../lib/store';
 import { supabase } from '../lib/supabase';
 import { writeActivity } from '../lib/store';
 import { scheduleNotif, cancelNotif, secondsUntil } from '../lib/notifications';
@@ -830,6 +830,26 @@ export function AddTodoSheet() {
   const [newSubtaskText, setNewSubtaskText] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // New PM Attributes
+  const [status, setStatus] = useState<'TODO' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE'>('TODO');
+  const [projectName, setProjectName] = useState('General');
+  const [estimatedHours, setEstimatedHours] = useState('');
+  const [notes, setNotes] = useState('');
+
+  // Extract unique active project names for suggestions
+  const existingProjects = Array.from(
+    new Set((state.todos || []).map(t => t.projectName).filter((name): name is string => !!name))
+  );
+
+  useEffect(() => {
+    if (state.modal?.kind === 'addTodo') {
+      setStatus(state.modal.initialStatus ?? 'TODO');
+      setProjectName('General');
+      setEstimatedHours('');
+      setNotes('');
+    }
+  }, [state.modal]);
+
   function addPendingSubtask() {
     if (!newSubtaskText.trim()) return;
     setPendingSubtasks([...pendingSubtasks, newSubtaskText.trim()]);
@@ -872,10 +892,14 @@ export function AddTodoSheet() {
       text: text.trim(),
       is_shared: shared,
       shared_with: finalSharedWith,
-      is_done: false,
+      is_done: status === 'DONE',
       due_label: due,
       priority: p,
       assigned_to: assignedTo.length === 0 ? null : assignedTo,
+      status: status,
+      project_name: projectName.trim() || 'General',
+      estimated_hours: estimatedHours ? parseInt(estimatedHours, 10) : null,
+      notes: notes.trim(),
     }).select('id').single();
 
     // Insert subtasks if we have them and parent insertion succeeded
@@ -887,6 +911,8 @@ export function AddTodoSheet() {
         is_shared: shared,
         shared_with: finalSharedWith,
         is_done: false,
+        status: 'TODO',
+        project_name: projectName.trim() || 'General',
         due_label: due,
         priority: p,
         parent_id: inserted.id,
@@ -894,13 +920,15 @@ export function AddTodoSheet() {
       await supabase.from('todos').insert(subtaskRows);
     }
 
+    const actorName = state.profiles[viewer]?.displayName ?? 'Someone';
     await writeActivity(state.householdId, state.userId, viewer,
       'added', text.trim(), 'todo',
-      shared ? { title: 'New shared to-do', body: text.trim(), forUser: 'B' } : undefined
+      shared ? { title: `${actorName} added a task`, body: `"${text.trim()}"`, forUser: 'B' } : undefined
     );
     setSaving(false);
     setText(''); setShared(true); setSharedWith(null); setDue('TODAY'); setP(2); setAssignedTo([]);
     setPendingSubtasks([]); setNewSubtaskText('');
+    setStatus('TODO'); setProjectName('General'); setEstimatedHours(''); setNotes('');
     dispatch({ t: 'closeModal' });
   }
 
@@ -929,6 +957,57 @@ export function AddTodoSheet() {
         <View style={sh.field}>
           <Text style={sh.fieldLabel}>TO-DO</Text>
           <TextInput style={sh.fieldInput} autoFocus placeholder="e.g. Buy fresh herbs" placeholderTextColor={colors.fg6} value={text} onChangeText={setText} />
+        </View>
+
+        <View style={sh.field}>
+          <Text style={sh.fieldLabel}>STATUS</Text>
+          <View style={[S.row, { gap: 6, marginTop: 4 }]}>
+            {([
+              { key: 'TODO', label: 'To Do' },
+              { key: 'IN_PROGRESS', label: 'In Progress' },
+              { key: 'BLOCKED', label: 'Blocked' },
+              { key: 'DONE', label: 'Done' }
+            ] as const).map(item => (
+              <TouchableOpacity key={item.key} onPress={() => setStatus(item.key)}
+                style={{ flex: 1, height: 32, borderRadius: 9, justifyContent: 'center', alignItems: 'center',
+                  backgroundColor: status === item.key ? colors.foreground : 'transparent',
+                  borderWidth: 1, borderColor: status === item.key ? colors.foreground : colors.border08 }}>
+                <Text style={{ fontSize: 10, fontWeight: '700', letterSpacing: 0.1, color: status === item.key ? '#fff' : colors.fg3 }}>{item.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        <View style={sh.field}>
+          <Text style={sh.fieldLabel}>PROJECT FOLDER</Text>
+          <TextInput style={sh.fieldInput} placeholder="e.g. House Chores, Work, Groceries" placeholderTextColor={colors.fg6} value={projectName} onChangeText={setProjectName} />
+          {existingProjects.length > 0 && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 6 }} contentContainerStyle={{ gap: 6 }}>
+              {existingProjects.map(pName => (
+                <TouchableOpacity key={pName} onPress={() => setProjectName(pName)}
+                  style={{ height: 26, paddingHorizontal: 10, borderRadius: 6, justifyContent: 'center', backgroundColor: colors.bgTint04, borderWidth: 1, borderColor: colors.border06 }}>
+                  <Text style={{ fontFamily: 'Courier', fontSize: 9, color: colors.fg3 }}>{pName.toUpperCase()}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
+        </View>
+
+        <View style={sh.field}>
+          <Text style={sh.fieldLabel}>ESTIMATED TIME (HOURS)</Text>
+          <TextInput style={sh.fieldInput} placeholder="e.g. 2 (optional)" placeholderTextColor={colors.fg6} keyboardType="numeric" value={estimatedHours} onChangeText={setEstimatedHours} />
+        </View>
+
+        <View style={sh.field}>
+          <Text style={sh.fieldLabel}>NOTES & DETAILS</Text>
+          <TextInput
+            style={[sh.fieldInput, { minHeight: 60, textAlignVertical: 'top' }]}
+            multiline
+            placeholder="Add description, markdown notes or checklists..."
+            placeholderTextColor={colors.fg6}
+            value={notes}
+            onChangeText={setNotes}
+          />
         </View>
         <View style={sh.field}>
           <Text style={sh.fieldLabel}>DUE</Text>
@@ -1087,6 +1166,21 @@ export function TodoDetailSheet() {
   const [subText, setSubText] = useState('');
   const [addingSub, setAddingSub] = useState(false);
 
+  // Local state for interactive PM updates
+  const [localStatus, setLocalStatus] = useState<'TODO' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE'>('TODO');
+  const [localProjectName, setLocalProjectName] = useState('General');
+  const [localNotes, setLocalNotes] = useState('');
+  const [localEstimatedHours, setLocalEstimatedHours] = useState('');
+
+  useEffect(() => {
+    if (parent) {
+      setLocalStatus(parent.status);
+      setLocalProjectName(parent.projectName ?? 'General');
+      setLocalNotes(parent.notes ?? '');
+      setLocalEstimatedHours(parent.estimatedHours !== undefined && parent.estimatedHours !== null ? String(parent.estimatedHours) : '');
+    }
+  }, [parent?.id, visible]);
+
   if (!parent) return null;
 
   const viewer = state.viewer;
@@ -1163,9 +1257,118 @@ export function TodoDetailSheet() {
           <Text style={sh.tagText}>PRIORITY: P{parent.p}</Text>
         </View>
         <View style={sh.tagWrap}>
-          <UserChip id={parent.who} />
+            <UserChip id={parent.who} />
           <Text style={sh.tagText}>CREATED BY {state.profiles[parent.who]?.displayName?.toUpperCase() ?? 'N/A'}</Text>
         </View>
+      </View>
+
+      {/* Status Pipeline */}
+      <SecLabel>Status</SecLabel>
+      <View style={[S.row, { gap: 6, marginBottom: 20 }]}>
+        {([
+          { key: 'TODO', label: 'To Do', activeBg: '#7A7A7A' },
+          { key: 'IN_PROGRESS', label: 'In Progress', activeBg: '#CA8A04' },
+          { key: 'BLOCKED', label: 'Blocked', activeBg: '#DC2626' },
+          { key: 'DONE', label: 'Done', activeBg: '#141414' }
+        ] as const).map(item => {
+          const isActive = localStatus === item.key;
+          return (
+            <TouchableOpacity key={item.key}
+              onPress={async () => {
+                setLocalStatus(item.key);
+                await updateTodoItemDetails(parent, { status: item.key }, state, dispatch);
+              }}
+              style={{ flex: 1, height: 36, borderRadius: 10, justifyContent: 'center', alignItems: 'center',
+                backgroundColor: isActive ? item.activeBg : 'transparent',
+                borderWidth: 1, borderColor: isActive ? item.activeBg : colors.border08 }}>
+              <Text style={{ fontSize: 10.5, fontWeight: '700', letterSpacing: 0.1, color: isActive ? '#fff' : colors.fg3 }}>
+                {item.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      {/* Due Date Picker */}
+      <SecLabel>Due Date</SecLabel>
+      <View style={[S.row, { gap: 6, marginBottom: 20 }]}>
+        {['TODAY', 'TOMORROW', 'THIS WEEK', 'LATER'].map(d => {
+          const isActive = parent.due === d;
+          return (
+            <TouchableOpacity key={d}
+              onPress={async () => {
+                await updateTodoItemDetails(parent, { due: d }, state, dispatch);
+              }}
+              style={{ flex: 1, height: 36, borderRadius: 10, justifyContent: 'center', alignItems: 'center',
+                backgroundColor: isActive ? colors.foreground : 'transparent',
+                borderWidth: 1, borderColor: isActive ? colors.foreground : colors.border08 }}>
+              <Text style={{ fontFamily: 'Courier', fontSize: 9.5, textTransform: 'uppercase', letterSpacing: 1,
+                color: isActive ? '#fff' : colors.fg3 }}>
+                {d}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      {/* Project & Estimated Hours */}
+      <View style={[S.row, { gap: 10, marginBottom: 20 }]}>
+        {/* Project Folder */}
+        <View style={{ flex: 2 }}>
+          <Text style={{ fontFamily: 'Courier', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1.8, color: colors.fg5, marginBottom: 8 }}>PROJECT FOLDER</Text>
+          <TextInput
+            style={{
+              height: 38, borderWidth: 1, borderColor: colors.border08, borderRadius: 10,
+              paddingHorizontal: 12, fontSize: 13, color: colors.fg1, backgroundColor: '#fff'
+            }}
+            placeholder="Folder name"
+            value={localProjectName}
+            onChangeText={setLocalProjectName}
+            onBlur={async () => {
+              await updateTodoItemDetails(parent, { projectName: localProjectName.trim() || 'General' }, state, dispatch);
+            }}
+          />
+        </View>
+
+        {/* Time Estimation */}
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontFamily: 'Courier', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1.8, color: colors.fg5, marginBottom: 8 }}>ESTIMATE (H)</Text>
+          <TextInput
+            style={{
+              height: 38, borderWidth: 1, borderColor: colors.border08, borderRadius: 10,
+              paddingHorizontal: 12, fontSize: 13, color: colors.fg1, backgroundColor: '#fff', textAlign: 'center'
+            }}
+            placeholder="Hours"
+            keyboardType="numeric"
+            value={localEstimatedHours}
+            onChangeText={setLocalEstimatedHours}
+            onBlur={async () => {
+              const val = localEstimatedHours.trim();
+              const hoursNum = val ? parseInt(val, 10) : null;
+              await updateTodoItemDetails(parent, { estimatedHours: hoursNum }, state, dispatch);
+            }}
+          />
+        </View>
+      </View>
+
+      {/* Notes / Markdown Description */}
+      <SecLabel>Notes & Details</SecLabel>
+      <View style={{ marginBottom: 20 }}>
+        <TextInput
+          style={{
+            borderWidth: 1, borderColor: colors.border08, borderRadius: 12,
+            padding: 12, fontSize: 13, color: colors.fg1, backgroundColor: '#fff',
+            minHeight: 80, textAlignVertical: 'top'
+          }}
+          multiline
+          placeholder="Add descriptions, subtasks checklist, reference links..."
+          placeholderTextColor={colors.fg6}
+          value={localNotes}
+          onChangeText={setLocalNotes}
+          onBlur={async () => {
+            await updateTodoItemDetails(parent, { notes: localNotes }, state, dispatch);
+          }}
+        />
       </View>
 
       {/* Assignment Section */}
