@@ -2,7 +2,7 @@
   "expo": {
     "name": "Timely Sync",
     "slug": "timely-sync",
-    "version": "1.1.3",
+    "version": "1.2.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -24,7 +24,8 @@
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
-        "android.permission.POST_NOTIFICATIONS"
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.CAMERA"
       ]
     },
     "web": {
@@ -41,10 +42,30 @@
         }
       ],
       "expo-audio",
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Timely to scan household QR codes.",
+          "barcodeScannerEnabled": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Timely to select QR code images from your library."
+        }
+      ],
+      [
+        "react-native-share",
+        {
+          "enableBase64ShareAndroid": true
+        }
+      ],
+      "expo-build-properties"
     ],
     "owner": "adityasah04",
-    "runtimeVersion": "1.1.3",
+    "runtimeVersion": "1.2.0",
     "extra": {
       "eas": {
         "projectId": "8a6910cd-0bdc-4661-a960-ef0e6805baad"

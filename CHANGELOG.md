@@ -1,5 +1,68 @@
 # Changelog
 
+## [1.2.0] — 2026-06-09
+
+Release of **timely-sync** — ships a full WhatsApp-style chat upgrade with reply quotes, Group Info modal, granular real-time caching, message edit/delete, edited message indicators, and original message reveal.
+
+### New Features
+
+- **Reply Quotes inside Bubbles** — replying to a message shows a quoted snippet inside the bubble (WhatsApp/Telegram style), with a colored accent bar, sender name, and tap-to-scroll-and-highlight jump to the original message.
+- **Group Info Modal** — tapping the channel name in the chat header opens a WhatsApp-style group info sheet showing channel name, member count, and all member chips.
+- **Inline Edit / Delete on Double-Tap** — double-tapping your own message reveals edit (pencil) and delete (trash) icons inline next to the bubble; no floating menu.
+- **Message Editing** — edit your own messages in-place; edited messages show a subtle italic "edited" label next to the timestamp.
+- **Original Message Reveal** — long-pressing an edited message toggles a panel below the bubble showing the original content before any edits.
+- **Triple-Tap → Create To-Do** — triple-tapping any message opens the Add To-Do modal pre-filled with the message text, so you can assign, prioritize, and save it directly.
+- **Long-Press → Show Original** — long press on edited messages reveals original content; non-edited messages do nothing on long press.
+- **Granular Real-Time Caching** — replaced the full-refetch-on-every-change pattern with per-event Supabase Realtime handlers (`INSERT`/`UPDATE`/`DELETE`) for messages, todos, events, docs, and channels. Deletes and edits reflect instantly with zero round trips.
+- **Long-Press → Open Todo Modal** — long-pressing a message pre-fills the full Add To-Do sheet (with assignee, project, priority, notes) instead of a confirmation dialog.
+
+### Bug Fixes
+
+- Fixed partner chat bubble stretching full width for third+ household members — added `alignSelf` to bubble wrapper.
+- Fixed sender name invisible for slot-1 users (white-on-white) — now uses `colors.fg4` for all partner names.
+- Fixed reply quote text invisible on own (green) bubbles — corrected background and text colors.
+- Fixed message highlight covering full row width on scroll-jump — highlight now wraps only the bubble, not the full-width row.
+- Fixed bubble too narrow for short messages with a reply quote — added `minWidth` when quote is present.
+
+### Technical
+
+- New Supabase migration: `is_edited` (boolean) and `original_content` (text) columns on `messages` table.
+- New Supabase migration: `reply_to_id`, `reply_to_content`, `reply_to_sender` columns on `messages` table.
+- `useRealtime` rewritten with granular `RealtimeCallbacks` interface — separate `onUpsertMessage`, `onDeleteMessage`, `onUpsertTodo`, etc.
+- Store updated with granular action types: `upsertMessage`, `deleteMessage`, `upsertTodo`, `deleteTodo`, `upsertEvent`, `deleteEvent`, `upsertDoc`, `deleteDoc`, `upsertChannel`, `deleteChannel`.
+- E2EE: `original_content` is encrypted with the channel key before storing; only the first edit captures the original (subsequent edits preserve it).
+- TypeScript clean — zero errors.
+
+---
+
+## [1.1.4] — 2026-06-02
+
+Production release of **timely-sync** — ships the Kanban board, project folder filters, wiki spec pinning, chronological Today groupings, past calendar mapping, dynamic notifications, event rescheduling with custom date/time picker, and prepone/postpone day chips. Local notifications enabled for Expo Go with Android `POST_NOTIFICATIONS` permission.
+
+### New Features
+
+- **Advanced Kanban Board & View Toggles** — LIST / BOARD toggle for To-Dos; Board view with 4 columns (`To Do`, `In Progress`, `Blocked`, `Done`), horizontal scrolling, snap-to-interval lanes.
+- **Project Folder Filter Strip** — dynamic horizontal filter strip grouping tasks by folder (`📁 Work`, `📁 Personal`, etc.).
+- **Refined Kanban Cards** — folder indicators, priority-color badges, estimated time, subtask count, assignee chips, quick-move chevron actions.
+- **Wiki Spec Pinning / Favorites** — favorited specs float to the top of the Docs wiki list.
+- **Chronological Today Screen Groupings** — Up Next grouped as **Today**, **Tomorrow**, **Later**.
+- **Past Calendar Events Mapping** — weekly grid now fetches from Monday of the current week, showing past events correctly.
+- **Event Rescheduling** — custom date/time picker with presets to reschedule any event from the detail sheet.
+- **Prepone / Postpone Chips** — quick `1d`, `2d`, `1w`, `1m` chips to shift event dates instantly.
+- **Dynamic Task Notifications** — notification bodies show actor name, action verb, and task name in real time.
+
+### Bug Fixes
+
+- Fixed Android `POST_NOTIFICATIONS` permission missing from `app.json` (duplicate permissions removed).
+- Enabled local notifications in Expo Go development builds.
+
+### Technical
+
+- EAS production build (Android APK, build `c25bf3b2`).
+- TypeScript clean — zero errors.
+
+---
+
 ## [1.1.0] — 2026-06-02
 
 Upgrade of **timely-sync** — adding an Advanced Project Management system, dynamic spec favoriting/pinning, chronological Today view groupings, full weekly calendar past events mapping, and real-time dynamic task notifications.

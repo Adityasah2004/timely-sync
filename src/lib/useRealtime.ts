@@ -12,6 +12,11 @@ interface DbMessage {
   is_system: boolean;
   channel_id: string | null;
   created_at: string;
+  reply_to_id: string | null;
+  reply_to_content: string | null;
+  reply_to_sender: string | null;
+  is_edited: boolean;
+  original_content: string | null;
 }
 
 interface DbDoc {
@@ -27,7 +32,7 @@ interface DbDoc {
   updated_at: string;
 }
 
-function dbEvent(r: DbEvent): CalEvent {
+export function dbEvent(r: DbEvent): CalEvent {
   return {
     id: r.id,
     start: r.start_time.slice(0, 5),
@@ -41,7 +46,7 @@ function dbEvent(r: DbEvent): CalEvent {
   };
 }
 
-function dbTodo(r: DbTodo): Todo {
+export function dbTodo(r: DbTodo): Todo {
   return {
     id: r.id,
     text: r.text,
@@ -73,7 +78,7 @@ function dbAlarm(r: DbAlarm): Alarm {
   };
 }
 
-function dbMessage(r: DbMessage): ChatMessage {
+export function dbMessage(r: DbMessage): ChatMessage {
   return {
     id: r.id,
     senderShort: r.sender_short as UserId | 'S',
@@ -82,10 +87,15 @@ function dbMessage(r: DbMessage): ChatMessage {
     channelId: r.channel_id,
     timestamp: new Date(r.created_at).toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', hour12: false }),
     createdAt: r.created_at,
+    replyToId: r.reply_to_id ?? null,
+    replyToContent: r.reply_to_content ?? null,
+    replyToSender: r.reply_to_sender ?? null,
+    isEdited: r.is_edited ?? false,
+    originalContent: r.original_content ?? null,
   };
 }
 
-function dbChannel(r: DbChannel): ChatChannel {
+export function dbChannel(r: DbChannel): ChatChannel {
   return {
     id: r.id,
     name: r.name,
@@ -96,7 +106,7 @@ function dbChannel(r: DbChannel): ChatChannel {
   };
 }
 
-function dbDoc(r: DbDoc): StartupDoc {
+export function dbDoc(r: DbDoc): StartupDoc {
   return {
     id: r.id,
     title: r.title,
@@ -113,6 +123,7 @@ export type { DbNotification };
 
 interface RealtimeCallbacks {
   householdId: string | null;
+  // Initial load / manual refresh (bulk)
   onEvents:        (evs: CalEvent[]) => void;
   onTodos:         (ts: Todo[]) => void;
   onAlarms:        (as: Alarm[]) => void;
@@ -122,34 +133,34 @@ interface RealtimeCallbacks {
   onDocs:          (docs: StartupDoc[]) => void;
   onChannels:      (chans: ChatChannel[]) => void;
   onFocusSessions: (sessions: any[]) => void;
+  // Granular realtime (single row)
+  onUpsertMessage:  (msg: ChatMessage) => void;
+  onDeleteMessage:  (id: string) => void;
+  onUpsertTodo:     (todo: Todo) => void;
+  onDeleteTodo:     (id: string) => void;
+  onUpsertEvent:    (event: CalEvent) => void;
+  onDeleteEvent:    (id: string) => void;
+  onUpsertDoc:      (doc: StartupDoc) => void;
+  onDeleteDoc:      (id: string) => void;
+  onUpsertChannel:  (channel: ChatChannel) => void;
+  onDeleteChannel:  (id: string) => void;
 }
 
-// Returns Mon and Sun ISO dates for the week containing `date`
-function weekRange(date: Date): { from: string; to: string } {
-  const d = new Date(date);
-  const dow = d.getDay(); // 0=Sun
-  const diff = dow === 0 ? -6 : 1 - dow;
-  const mon = new Date(d);
-  mon.setDate(d.getDate() + diff);
-  const sun = new Date(mon);
-  sun.setDate(mon.getDate() + 6);
-  const fmt = (dt: Date) => {
-    const y = dt.getFullYear();
-    const m = String(dt.getMonth() + 1).padStart(2, '0');
-    const day = String(dt.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  };
-  return { from: fmt(mon), to: fmt(sun) };
-}
+export function useRealtime({
+  householdId,
+  onEvents, onTodos, onAlarms, onActivity, onNotifications, onMessages, onDocs, onChannels, onFocusSessions,
+  onUpsertMessage, onDeleteMessage,
+  onUpsertTodo, onDeleteTodo,
+  onUpsertEvent, onDeleteEvent,
+  onUpsertDoc, onDeleteDoc,
+  onUpsertChannel, onDeleteChannel,
+}: RealtimeCallbacks): { refresh: () => Promise<void> } {
 
-export function useRealtime({ householdId, onEvents, onTodos, onAlarms, onActivity, onNotifications, onMessages, onDocs, onChannels, onFocusSessions }: RealtimeCallbacks): { refresh: () => Promise<void> } {
   const fetchAll = useCallback(async () => {
     if (!householdId) return;
 
-    // Fetch events starting from Monday of the current week to show past events on the plan,
-    // through to a 14-day rolling window into the future so planned-ahead events are visible.
     const today = new Date();
-    const dow = today.getDay(); // 0=Sun
+    const dow = today.getDay();
     const mondayOffset = dow === 0 ? -6 : 1 - dow;
     const monday = new Date(today);
     monday.setDate(today.getDate() + mondayOffset);
@@ -166,56 +177,15 @@ export function useRealtime({ householdId, onEvents, onTodos, onAlarms, onActivi
     const toDate = fmt(future);
 
     const [{ data: evs }, { data: todos }, { data: alarms }, { data: acts }, { data: notifs }, { data: msgs }, { data: docs }, { data: chans }, { data: focuses }] = await Promise.all([
-      supabase
-        .from('events')
-        .select('*')
-        .eq('household_id', householdId)
-        .gte('event_date', from)
-        .lte('event_date', toDate)
-        .order('start_time'),
-      supabase
-        .from('todos')
-        .select('*, profiles!todos_owner_id_fkey(short_id)')
-        .eq('household_id', householdId)
-        .order('created_at'),
-      supabase
-        .from('alarms')
-        .select('*, profiles!alarms_owner_id_fkey(short_id)')
-        .eq('household_id', householdId)
-        .order('alarm_time'),
-      supabase
-        .from('activity')
-        .select('*')
-        .eq('household_id', householdId)
-        .order('created_at', { ascending: false })
-        .limit(30),
-      supabase
-        .from('notifications')
-        .select('*')
-        .eq('household_id', householdId)
-        .order('created_at', { ascending: false })
-        .limit(50),
-      supabase
-        .from('messages')
-        .select('*')
-        .eq('household_id', householdId)
-        .order('created_at', { ascending: true })
-        .limit(100),
-      supabase
-        .from('docs')
-        .select('*')
-        .eq('household_id', householdId)
-        .order('updated_at', { ascending: false }),
-      supabase
-        .from('channels')
-        .select('*')
-        .eq('household_id', householdId)
-        .order('created_at'),
-      supabase
-        .from('focus_sessions')
-        .select('*')
-        .eq('household_id', householdId)
-        .order('started_at', { ascending: false }),
+      supabase.from('events').select('*').eq('household_id', householdId).gte('event_date', from).lte('event_date', toDate).order('start_time'),
+      supabase.from('todos').select('*, profiles!todos_owner_id_fkey(short_id)').eq('household_id', householdId).order('created_at'),
+      supabase.from('alarms').select('*, profiles!alarms_owner_id_fkey(short_id)').eq('household_id', householdId).order('alarm_time'),
+      supabase.from('activity').select('*').eq('household_id', householdId).order('created_at', { ascending: false }).limit(30),
+      supabase.from('notifications').select('*').eq('household_id', householdId).order('created_at', { ascending: false }).limit(50),
+      supabase.from('messages').select('*').eq('household_id', householdId).order('created_at', { ascending: true }).limit(200),
+      supabase.from('docs').select('*').eq('household_id', householdId).order('updated_at', { ascending: false }),
+      supabase.from('channels').select('*').eq('household_id', householdId).order('created_at'),
+      supabase.from('focus_sessions').select('*').eq('household_id', householdId).order('started_at', { ascending: false }),
     ]);
 
     if (evs)    onEvents(evs.map(dbEvent));
@@ -241,15 +211,68 @@ export function useRealtime({ householdId, onEvents, onTodos, onAlarms, onActivi
 
     const channel = supabase
       .channel(`household:${householdId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'events',         filter: `household_id=eq.${householdId}` }, fetchAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'todos',          filter: `household_id=eq.${householdId}` }, fetchAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'alarms',         filter: `household_id=eq.${householdId}` }, fetchAll)
+
+      // ── Messages: granular upsert/delete
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `household_id=eq.${householdId}` }, ({ new: r }) => {
+        onUpsertMessage(dbMessage(r as DbMessage));
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `household_id=eq.${householdId}` }, ({ new: r }) => {
+        onUpsertMessage(dbMessage(r as DbMessage));
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages', filter: `household_id=eq.${householdId}` }, ({ old: r }) => {
+        onDeleteMessage((r as any).id);
+      })
+
+      // ── Todos: granular upsert/delete
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'todos', filter: `household_id=eq.${householdId}` }, ({ new: r }) => {
+        onUpsertTodo(dbTodo(r as DbTodo));
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'todos', filter: `household_id=eq.${householdId}` }, ({ new: r }) => {
+        onUpsertTodo(dbTodo(r as DbTodo));
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'todos', filter: `household_id=eq.${householdId}` }, ({ old: r }) => {
+        onDeleteTodo((r as any).id);
+      })
+
+      // ── Events: granular upsert/delete
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'events', filter: `household_id=eq.${householdId}` }, ({ new: r }) => {
+        onUpsertEvent(dbEvent(r as DbEvent));
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'events', filter: `household_id=eq.${householdId}` }, ({ new: r }) => {
+        onUpsertEvent(dbEvent(r as DbEvent));
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'events', filter: `household_id=eq.${householdId}` }, ({ old: r }) => {
+        onDeleteEvent((r as any).id);
+      })
+
+      // ── Docs: granular upsert/delete
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'docs', filter: `household_id=eq.${householdId}` }, ({ new: r }) => {
+        onUpsertDoc(dbDoc(r as DbDoc));
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'docs', filter: `household_id=eq.${householdId}` }, ({ new: r }) => {
+        onUpsertDoc(dbDoc(r as DbDoc));
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'docs', filter: `household_id=eq.${householdId}` }, ({ old: r }) => {
+        onDeleteDoc((r as any).id);
+      })
+
+      // ── Channels: granular upsert/delete
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'channels', filter: `household_id=eq.${householdId}` }, ({ new: r }) => {
+        onUpsertChannel(dbChannel(r as DbChannel));
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'channels', filter: `household_id=eq.${householdId}` }, ({ new: r }) => {
+        onUpsertChannel(dbChannel(r as DbChannel));
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'channels', filter: `household_id=eq.${householdId}` }, ({ old: r }) => {
+        onDeleteChannel((r as any).id);
+      })
+
+      // ── Activity, notifications, alarms, focus_sessions: still refetch (low frequency, small payloads)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'activity',       filter: `household_id=eq.${householdId}` }, fetchAll)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications',  filter: `household_id=eq.${householdId}` }, fetchAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages',       filter: `household_id=eq.${householdId}` }, fetchAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'docs',           filter: `household_id=eq.${householdId}` }, fetchAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'channels',       filter: `household_id=eq.${householdId}` }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'alarms',         filter: `household_id=eq.${householdId}` }, fetchAll)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'focus_sessions', filter: `household_id=eq.${householdId}` }, fetchAll)
+
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };

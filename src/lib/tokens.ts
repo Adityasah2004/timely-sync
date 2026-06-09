@@ -75,14 +75,19 @@ export const typography = {
   fontMono: 'Courier',   // monospace fallback
 };
 
-// Per-slot colors for up to 4 household members
+// Per-slot colors for up to 8 household members
 export const SLOT_COLORS: Record<string, { bg: string; fg: string; border: string }> = {
   '1': { bg: '#141414', fg: '#ffffff', border: '#141414' },           // filled black (was M)
   '2': { bg: '#ffffff', fg: '#141414', border: '#141414' },           // outlined (was A)
   '3': { bg: '#484848', fg: '#ffffff', border: '#484848' },           // dark grey
   '4': { bg: '#D4D4D4', fg: '#141414', border: '#A0A0A0' },           // light grey
+  '5': { bg: '#8A8A8A', fg: '#ffffff', border: '#8A8A8A' },           // medium grey
+  '6': { bg: '#EAEAEA', fg: '#141414', border: '#D4D4D4' },           // very light grey
+  '7': { bg: '#2C2C2C', fg: '#ffffff', border: '#2C2C2C' },           // charcoal
+  '8': { bg: '#F3F4F6', fg: '#1F2937', border: '#E5E7EB' },           // soft slate
   'B': { bg: '#141414', fg: '#ffffff', border: '#141414' },           // both/together
 };
+
 
 export const shadows = {
   sm: {

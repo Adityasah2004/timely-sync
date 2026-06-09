@@ -13,6 +13,7 @@ export interface ProfileInfo {
   shortId: UserId;
   roleLabel: string;
   tagline: string;
+  avatarUrl?: string | null;
   preferences?: Record<string, string>;
 }
 export type ProfileMap = Partial<Record<UserId, ProfileInfo>>;
@@ -20,6 +21,7 @@ export type ProfileMap = Partial<Record<UserId, ProfileInfo>>;
 interface AppState {
   tab: TabName;
   viewer: UserId;
+  mySlot: UserId | null;
   alarms: Alarm[];
   todos: Todo[];
   events: CalEvent[];
@@ -35,10 +37,14 @@ interface AppState {
   session: Session | null;
   userId: string | null;
   householdId: string | null;
+  householdName: string | null;
+  householdAvatar: string | null;
   authReady: boolean;
   profiles: ProfileMap;
   channels: ChatChannel[];
   activeChannelId: string | null;
+  userHouseholds: { id: string; name: string; avatarUrl?: string | null }[];
+  profilesLoaded: boolean;
 }
 
 type Action =
@@ -47,7 +53,7 @@ type Action =
   | { t: 'openEvent'; ev: CalEvent }
   | { t: 'openAdd' }
   | { t: 'openNewAlarm' }
-  | { t: 'openNewTodo'; initialStatus?: 'TODO' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE' }
+  | { t: 'openNewTodo'; initialStatus?: 'TODO' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE'; initialText?: string }
   | { t: 'openTodoDetail'; todo: Todo }
   | { t: 'openNewDoc' }
   | { t: 'openDoc'; doc: StartupDoc }
@@ -64,6 +70,8 @@ type Action =
   | { t: 'tick'; clock: Date }
   | { t: 'setSession'; session: Session | null; userId: string | null }
   | { t: 'setHousehold'; householdId: string | null }
+  | { t: 'setMySlot'; slot: UserId | null }
+  | { t: 'setHouseholdMeta'; name: string | null; avatarUrl: string | null }
   | { t: 'setAuthReady' }
   | { t: 'setEvents'; events: CalEvent[] }
   | { t: 'setTodos'; todos: Todo[] }
@@ -77,11 +85,25 @@ type Action =
   | { t: 'setProfiles'; profiles: ProfileMap }
   | { t: 'setChannels'; channels: ChatChannel[] }
   | { t: 'setActiveChannel'; channelId: string | null }
-  | { t: 'openNewChannel' };
+  | { t: 'openNewChannel' }
+  | { t: 'setUserHouseholds'; households: { id: string; name: string; avatarUrl?: string | null }[] }
+  | { t: 'setProfilesLoaded'; loaded: boolean }
+  // Granular realtime actions
+  | { t: 'upsertMessage'; msg: ChatMessage }
+  | { t: 'deleteMessage'; id: string }
+  | { t: 'upsertTodo'; todo: Todo }
+  | { t: 'deleteTodo'; id: string }
+  | { t: 'upsertEvent'; event: CalEvent }
+  | { t: 'deleteEvent'; id: string }
+  | { t: 'upsertDoc'; doc: StartupDoc }
+  | { t: 'deleteDoc'; id: string }
+  | { t: 'upsertChannel'; channel: ChatChannel }
+  | { t: 'deleteChannel'; id: string };
 
 const INITIAL_STATE: AppState = {
   tab: 'today',
   viewer: '1',
+  mySlot: null,
   alarms: [],
   todos: [],
   events: [],
@@ -96,11 +118,16 @@ const INITIAL_STATE: AppState = {
   session: null,
   userId: null,
   householdId: null,
+  householdName: null,
+  householdAvatar: null,
   authReady: false,
   profiles: {},
   channels: [],
   activeChannelId: null,
+  userHouseholds: [],
+  profilesLoaded: false,
 };
+
 
 function reducer(s: AppState, a: Action): AppState {
   switch (a.t) {
@@ -109,7 +136,7 @@ function reducer(s: AppState, a: Action): AppState {
     case 'openEvent':     return { ...s, modal: { kind: 'event', ev: a.ev } };
     case 'openAdd':       return { ...s, modal: { kind: 'addEvent' } };
     case 'openNewAlarm':  return { ...s, modal: { kind: 'addAlarm' } };
-    case 'openNewTodo':   return { ...s, modal: { kind: 'addTodo', initialStatus: a.initialStatus } };
+    case 'openNewTodo':   return { ...s, modal: { kind: 'addTodo', initialStatus: a.initialStatus, initialText: a.initialText } };
     case 'openTodoDetail': return { ...s, modal: { kind: 'todoDetail', todo: a.todo } };
     case 'openNewDoc':    return { ...s, modal: { kind: 'addDoc' } };
     case 'openDoc':       return { ...s, modal: { kind: 'doc', doc: a.doc } };
@@ -162,7 +189,37 @@ function reducer(s: AppState, a: Action): AppState {
     }
     case 'tick':               return { ...s, clock: a.clock };
     case 'setSession':         return { ...s, session: a.session, userId: a.userId };
-    case 'setHousehold':       return { ...s, householdId: a.householdId };
+    case 'setHousehold': {
+      if (a.householdId === null) {
+        return {
+          ...s,
+          householdId: null,
+          householdName: null,
+          householdAvatar: null,
+          mySlot: null,
+          profilesLoaded: false,
+          alarms: [],
+          todos: [],
+          events: [],
+          activity: [],
+          notifications: [],
+          focusSessions: [],
+          messages: [],
+          docs: [],
+          profiles: {},
+          channels: [],
+          activeChannelId: null,
+          userHouseholds: [],
+        };
+      }
+      return { ...s, householdId: a.householdId };
+    }
+    case 'setMySlot':         return { ...s, mySlot: a.slot, viewer: a.slot ?? s.viewer };
+    case 'setHouseholdMeta':  return { ...s, householdName: a.name, householdAvatar: a.avatarUrl };
+    case 'setUserHouseholds':  return { ...s, userHouseholds: a.households };
+    case 'setProfilesLoaded':  return { ...s, profilesLoaded: a.loaded };
+
+
     case 'setAuthReady':       return { ...s, authReady: true };
     case 'setEvents':          return { ...s, events: a.events };
     case 'setTodos':           return { ...s, todos: a.todos };
@@ -192,6 +249,51 @@ function reducer(s: AppState, a: Action): AppState {
     case 'setChannels':        return { ...s, channels: a.channels };
     case 'setActiveChannel':   return { ...s, activeChannelId: a.channelId };
     case 'openNewChannel':     return { ...s, modal: { kind: 'addChannel' } };
+    // Granular realtime actions — instant, no re-fetch
+    case 'upsertMessage': {
+      const exists = s.messages.some(m => m.id === a.msg.id);
+      return { ...s, messages: exists
+        ? s.messages.map(m => m.id === a.msg.id ? a.msg : m)
+        : [...s.messages, a.msg].sort((a, b) => (a.createdAt ?? '') < (b.createdAt ?? '') ? -1 : 1)
+      };
+    }
+    case 'deleteMessage':      return { ...s, messages: s.messages.filter(m => m.id !== a.id) };
+    case 'upsertTodo': {
+      const exists = s.todos.some(t => t.id === a.todo.id);
+      return { ...s, todos: exists
+        ? s.todos.map(t => t.id === a.todo.id ? a.todo : t)
+        : [a.todo, ...s.todos]
+      };
+    }
+    case 'deleteTodo':         return { ...s, todos: s.todos.filter(t => t.id !== a.id) };
+    case 'upsertEvent': {
+      const exists = s.events.some(e => e.id === a.event.id);
+      return { ...s, events: exists
+        ? s.events.map(e => e.id === a.event.id ? a.event : e)
+        : [...s.events, a.event]
+      };
+    }
+    case 'deleteEvent':        return { ...s, events: s.events.filter(e => e.id !== a.id) };
+    case 'upsertDoc': {
+      const exists = s.docs.some(d => d.id === a.doc.id);
+      return { ...s, docs: exists
+        ? s.docs.map(d => d.id === a.doc.id ? a.doc : d)
+        : [a.doc, ...s.docs]
+      };
+    }
+    case 'deleteDoc':          return { ...s, docs: s.docs.filter(d => d.id !== a.id) };
+    case 'upsertChannel': {
+      const exists = s.channels.some(c => c.id === a.channel.id);
+      return { ...s, channels: exists
+        ? s.channels.map(c => c.id === a.channel.id ? a.channel : c)
+        : [...s.channels, a.channel]
+      };
+    }
+    case 'deleteChannel':      return {
+      ...s,
+      channels: s.channels.filter(c => c.id !== a.id),
+      activeChannelId: s.activeChannelId === a.id ? null : s.activeChannelId,
+    };
     default: return s;
   }
 }
@@ -251,7 +353,27 @@ function RealtimeBridge({ householdId, dispatch, refreshRef }: { householdId: st
   const onChannels      = useCallback((chans: ChatChannel[])  => dispatch({ t: 'setChannels',      channels: chans }),     [dispatch]);
   const onFocusSessions = useCallback((sessions: any[])      => dispatch({ t: 'setFocusSessions', sessions }),           [dispatch]);
 
-  const { refresh } = useRealtime({ householdId, onEvents, onTodos, onAlarms, onActivity, onNotifications, onMessages, onDocs, onChannels, onFocusSessions });
+  // Granular realtime handlers
+  const onUpsertMessage  = useCallback((msg: ChatMessage)     => dispatch({ t: 'upsertMessage', msg }),    [dispatch]);
+  const onDeleteMessage  = useCallback((id: string)           => dispatch({ t: 'deleteMessage', id }),     [dispatch]);
+  const onUpsertTodo     = useCallback((todo: Todo)           => dispatch({ t: 'upsertTodo', todo }),       [dispatch]);
+  const onDeleteTodo     = useCallback((id: string)           => dispatch({ t: 'deleteTodo', id }),         [dispatch]);
+  const onUpsertEvent    = useCallback((event: CalEvent)      => dispatch({ t: 'upsertEvent', event }),     [dispatch]);
+  const onDeleteEvent    = useCallback((id: string)           => dispatch({ t: 'deleteEvent', id }),        [dispatch]);
+  const onUpsertDoc      = useCallback((doc: StartupDoc)      => dispatch({ t: 'upsertDoc', doc }),         [dispatch]);
+  const onDeleteDoc      = useCallback((id: string)           => dispatch({ t: 'deleteDoc', id }),          [dispatch]);
+  const onUpsertChannel  = useCallback((channel: ChatChannel) => dispatch({ t: 'upsertChannel', channel }), [dispatch]);
+  const onDeleteChannel  = useCallback((id: string)           => dispatch({ t: 'deleteChannel', id }),      [dispatch]);
+
+  const { refresh } = useRealtime({
+    householdId,
+    onEvents, onTodos, onAlarms, onActivity, onNotifications, onMessages, onDocs, onChannels, onFocusSessions,
+    onUpsertMessage, onDeleteMessage,
+    onUpsertTodo, onDeleteTodo,
+    onUpsertEvent, onDeleteEvent,
+    onUpsertDoc, onDeleteDoc,
+    onUpsertChannel, onDeleteChannel,
+  });
   refreshRef.current = refresh;
   return null;
 }
@@ -285,39 +407,104 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // Load household + all profiles for current user
+  // Load household + all profiles for current user + listen to profile changes in real-time
   useEffect(() => {
     if (!state.userId) return;
-    supabase
-      .from('profiles')
-      .select('id, household_id, short_id, display_name, role_label, tagline, preferences')
-      .eq('id', state.userId)
-      .single()
-      .then(({ data: me }) => {
-        if (!me) return;
-        dispatch({ t: 'setHousehold', householdId: me.household_id });
-        dispatch({ t: 'setViewer', u: me.short_id as UserId });
-        return supabase
+
+    const fetchProfiles = async () => {
+      try {
+        const { data: me } = await supabase
           .from('profiles')
-          .select('id, short_id, display_name, role_label, tagline, preferences')
-          .eq('household_id', me.household_id)
-          .then(({ data: all }) => {
-            if (!all) return;
-            const map: ProfileMap = {};
-            all.forEach((p: { id: string; short_id: string; display_name: string; role_label: string | null; tagline: string | null; preferences: Record<string, string> | null }) => {
-              map[p.short_id as UserId] = {
-                id:           p.id,
-                displayName:  p.display_name,
-                shortId:      p.short_id as UserId,
-                roleLabel:    p.role_label ?? '',
-                tagline:      p.tagline ?? '',
-                preferences:  p.preferences ?? undefined,
-              };
-            });
-            dispatch({ t: 'setProfiles', profiles: map });
-          });
-      });
+          .select('id, active_household_id, display_name, preferences')
+          .eq('id', state.userId)
+          .single();
+        if (!me) return;
+
+        // Fetch memberships to find all households this user is in
+        const { data: memberships } = await supabase
+          .from('household_members')
+          .select('household_id, households(name, avatar_url)')
+          .eq('user_id', state.userId);
+
+        const userHouseholds = (memberships ?? []).map((m: any) => ({
+          id: m.household_id,
+          name: m.households?.name ?? 'Household',
+          avatarUrl: m.households?.avatar_url ?? null,
+        }));
+        // Dispatch setHousehold FIRST (may clear userHouseholds if null),
+        // then setUserHouseholds to repopulate — HouseholdScreen needs the list
+        // even when active_household_id is null (to show the "Welcome back" picker).
+        dispatch({ t: 'setHousehold', householdId: me.active_household_id });
+        dispatch({ t: 'setUserHouseholds', households: userHouseholds });
+
+        if (!me.active_household_id) {
+          dispatch({ t: 'setProfiles', profiles: {} });
+          return;
+        }
+
+
+        // Fetch household details (name + avatar)
+        const { data: hhData } = await supabase
+          .from('households')
+          .select('name, avatar_url')
+          .eq('id', me.active_household_id)
+          .single();
+        dispatch({ t: 'setHouseholdMeta', name: hhData?.name ?? null, avatarUrl: hhData?.avatar_url ?? null });
+
+        // Fetch user's viewer short ID for this household
+        const { data: currentMember } = await supabase
+          .from('household_members')
+          .select('short_id')
+          .eq('user_id', state.userId)
+          .eq('household_id', me.active_household_id)
+          .single();
+
+        if (currentMember) {
+          dispatch({ t: 'setMySlot', slot: currentMember.short_id as UserId });
+        }
+
+        // Fetch all profiles in this active household
+        const { data: all } = await supabase
+          .from('household_members')
+          .select('user_id, short_id, role_label, tagline, profiles(display_name, preferences, avatar_url)')
+          .eq('household_id', me.active_household_id);
+
+        if (!all) return;
+
+        const map: ProfileMap = {};
+        all.forEach((m: any) => {
+          map[m.short_id as UserId] = {
+            id:           m.user_id,
+            displayName:  m.profiles?.display_name ?? 'N/A',
+            shortId:      m.short_id as UserId,
+            roleLabel:    m.role_label ?? '',
+            tagline:      m.tagline ?? '',
+            avatarUrl:    m.profiles?.avatar_url ?? null,
+            preferences:  m.profiles?.preferences ?? undefined,
+          };
+        });
+        dispatch({ t: 'setProfiles', profiles: map });
+      } catch (err) {
+        // Safe catch
+      } finally {
+        dispatch({ t: 'setProfilesLoaded', loaded: true });
+      }
+    };
+
+    fetchProfiles();
+
+    // Subscribe to changes on profiles and memberships
+    const channel = supabase
+      .channel(`profiles-user:${state.userId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${state.userId}` }, fetchProfiles)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'household_members' }, fetchProfiles)
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [state.userId]);
+
 
 
 

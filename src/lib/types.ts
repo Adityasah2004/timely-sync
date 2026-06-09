@@ -1,6 +1,7 @@
-export type UserId = '1' | '2' | '3' | '4';
-export const USER_SLOTS: UserId[] = ['1', '2', '3', '4'];
-export const MAX_HOUSEHOLD_MEMBERS = 4;
+export type UserId = '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8';
+export const USER_SLOTS: UserId[] = ['1', '2', '3', '4', '5', '6', '7', '8'];
+export const MAX_HOUSEHOLD_MEMBERS = 8;
+
 
 export interface User {
   id: UserId;
@@ -103,6 +104,11 @@ export interface ChatMessage {
   timestamp: string; // HH:MM
   createdAt?: string; // ISO date string
   channelId?: string | null;
+  replyToId?: string | null;
+  replyToContent?: string | null;
+  replyToSender?: string | null;
+  isEdited?: boolean;
+  originalContent?: string | null;
 }
 
 export interface DocAttachment {
@@ -128,7 +134,7 @@ export type TabName = 'today' | 'plan' | 'todos' | 'chat' | 'docs' | 'you' | 'no
 export type ModalKind =
   | { kind: 'event'; ev: CalEvent }
   | { kind: 'addEvent' }
-  | { kind: 'addTodo'; initialStatus?: 'TODO' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE' }
+  | { kind: 'addTodo'; initialStatus?: 'TODO' | 'IN_PROGRESS' | 'BLOCKED' | 'DONE'; initialText?: string }
   | { kind: 'addAlarm' }
   | { kind: 'addDoc' }
   | { kind: 'doc'; doc: StartupDoc }

@@ -6,6 +6,10 @@ export const USERS: Record<UserId, User> = {
   '2': { id: '2', name: 'Member 2', full: 'Member 2', role: '', tagline: '' },
   '3': { id: '3', name: 'Member 3', full: 'Member 3', role: '', tagline: '' },
   '4': { id: '4', name: 'Member 4', full: 'Member 4', role: '', tagline: '' },
+  '5': { id: '5', name: 'Member 5', full: 'Member 5', role: '', tagline: '' },
+  '6': { id: '6', name: 'Member 6', full: 'Member 6', role: '', tagline: '' },
+  '7': { id: '7', name: 'Member 7', full: 'Member 7', role: '', tagline: '' },
+  '8': { id: '8', name: 'Member 8', full: 'Member 8', role: '', tagline: '' },
 };
 
 export const USER_LIST: UserId[] = USER_SLOTS;
@@ -32,5 +36,5 @@ export const FOCUS_STATS = {
   goal: 20 * 60,
   streak: 0,
   longest: 0,
-  byUser: { '1': 0, '2': 0, '3': 0, '4': 0 } as Record<UserId, number>,
+  byUser: { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0, '6': 0, '7': 0, '8': 0 } as Record<UserId, number>,
 };

@@ -230,59 +230,75 @@ export function TodayScreen() {
           <Icon name="chev" size={12} />
         </TouchableOpacity>
       }>Shared to-dos</SecLabel>
-      <Card style={{ padding: 4, marginBottom: 24 }}>
-        {sharedTodos.slice(0, 4).map((td, i, arr) => (
-          <View key={td.id}
-            style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, borderBottomWidth: i < arr.length - 1 ? 1 : 0, borderBottomColor: colors.border06 }}>
-            {/* Checkbox Touch Target */}
-            <TouchableOpacity onPress={() => toggleTodoItem(td, state, dispatch)}
-              style={{ paddingVertical: 12, paddingRight: 6 }}>
-              <View style={{ width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: td.done ? colors.foreground : colors.border20, backgroundColor: td.done ? colors.foreground : '#fff', alignItems: 'center', justifyContent: 'center' }}>
-                {td.done && <Icon name="check" size={11} color="#fff" strokeWidth={2.4} />}
-              </View>
-            </TouchableOpacity>
-
-            {/* Details Touch Target */}
-            <TouchableOpacity onPress={() => dispatch({ t: 'openTodoDetail', todo: td })}
-              style={{ flex: 1, flexDirection: 'row', gap: 12, alignItems: 'center', paddingVertical: 12, paddingLeft: 6 }}>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 13.5, fontWeight: '500', letterSpacing: -0.1, textDecorationLine: td.done ? 'line-through' : 'none', color: td.done ? colors.fg6 : colors.fg1 }} numberOfLines={1}>{td.text}</Text>
-                <Text style={{ fontFamily: 'Courier', fontSize: 9, letterSpacing: 1.8, textTransform: 'uppercase', color: colors.fg5, marginTop: 3 }}>DUE {td.due}</Text>
-              </View>
-              {td.assignedTo && td.assignedTo.length > 0 && (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                  <Text style={{ fontFamily: 'Courier', fontSize: 7, color: colors.fg5 }}>TO</Text>
-                  <View style={{ flexDirection: 'row' }}>
-                    {td.assignedTo.map((uid, idx) => (
-                      <View key={uid} style={{ marginLeft: idx > 0 ? -6 : 0, zIndex: 10 - idx }}>
-                        <UserChip id={uid} />
-                      </View>
-                    ))}
+      <View style={{ marginBottom: 24 }}>
+        {sharedTodos.length === 0 ? (
+          <CardAlt style={{ padding: 20, alignItems: 'center' }}>
+            <Text style={{ fontSize: 11, color: colors.fg6, fontFamily: 'Courier', textTransform: 'uppercase', letterSpacing: 1 }}>No shared to-dos</Text>
+          </CardAlt>
+        ) : (
+          <Card style={{ padding: 4 }}>
+            {sharedTodos.slice(0, 4).map((td, i, arr) => (
+              <View key={td.id}
+                style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, borderBottomWidth: i < arr.length - 1 ? 1 : 0, borderBottomColor: colors.border06 }}>
+                {/* Checkbox Touch Target */}
+                <TouchableOpacity onPress={() => toggleTodoItem(td, state, dispatch)}
+                  style={{ paddingVertical: 12, paddingRight: 6 }}>
+                  <View style={{ width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: td.done ? colors.foreground : colors.border20, backgroundColor: td.done ? colors.foreground : '#fff', alignItems: 'center', justifyContent: 'center' }}>
+                    {td.done && <Icon name="check" size={11} color="#fff" strokeWidth={2.4} />}
                   </View>
-                </View>
-              )}
-            </TouchableOpacity>
-          </View>
-        ))}
-      </Card>
+                </TouchableOpacity>
+
+                {/* Details Touch Target */}
+                <TouchableOpacity onPress={() => dispatch({ t: 'openTodoDetail', todo: td })}
+                  style={{ flex: 1, flexDirection: 'row', gap: 12, alignItems: 'center', paddingVertical: 12, paddingLeft: 6 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 13.5, fontWeight: '500', letterSpacing: -0.1, textDecorationLine: td.done ? 'line-through' : 'none', color: td.done ? colors.fg6 : colors.fg1 }} numberOfLines={1}>{td.text}</Text>
+                    <Text style={{ fontFamily: 'Courier', fontSize: 9, letterSpacing: 1.8, textTransform: 'uppercase', color: colors.fg5, marginTop: 3 }}>DUE {td.due}</Text>
+                  </View>
+                  {td.assignedTo && td.assignedTo.length > 0 && (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <Text style={{ fontFamily: 'Courier', fontSize: 7, color: colors.fg5 }}>TO</Text>
+                      <View style={{ flexDirection: 'row' }}>
+                        {td.assignedTo.map((uid, idx) => (
+                          <View key={uid} style={{ marginLeft: idx > 0 ? -6 : 0, zIndex: 10 - idx }}>
+                            <UserChip id={uid} />
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              </View>
+            ))}
+          </Card>
+        )}
+      </View>
 
       {/* Activity feed */}
       <SecLabel count={state.activity.length}>Activity</SecLabel>
-      <Card style={{ padding: 0, marginBottom: 24, overflow: 'hidden' }}>
-        {state.activity.slice(0, 6).map((a, i) => (
-          <View key={i} style={[styles.row, { padding: 14, gap: 12, alignItems: 'flex-start', borderBottomWidth: i < 5 ? 1 : 0, borderBottomColor: colors.border06 }]}>
-            <UserChip id={a.who} />
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 13, lineHeight: 18, color: colors.fg2 }}>
-                <Text style={{ fontWeight: '700', color: colors.fg1 }}>{a.who === 'B' ? 'You both' : useName(a.who, state.profiles)}</Text>
-                {' '}{a.verb}{' '}
-                <Text style={{ color: colors.fg1, fontWeight: '500' }}>{a.obj}</Text>
-              </Text>
-              <Text style={{ fontFamily: 'Courier', fontSize: 9, letterSpacing: 1.8, textTransform: 'uppercase', color: colors.fg5, marginTop: 4 }}>{a.t} · {a.badge}</Text>
-            </View>
-          </View>
-        ))}
-      </Card>
+      <View style={{ marginBottom: 24 }}>
+        {state.activity.length === 0 ? (
+          <CardAlt style={{ padding: 20, alignItems: 'center' }}>
+            <Text style={{ fontSize: 11, color: colors.fg6, fontFamily: 'Courier', textTransform: 'uppercase', letterSpacing: 1 }}>No activity yet</Text>
+          </CardAlt>
+        ) : (
+          <Card style={{ padding: 0, overflow: 'hidden' }}>
+            {state.activity.slice(0, 6).map((a, i) => (
+              <View key={i} style={[styles.row, { padding: 14, gap: 12, alignItems: 'flex-start', borderBottomWidth: i < 5 ? 1 : 0, borderBottomColor: colors.border06 }]}>
+                <UserChip id={a.who} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 13, lineHeight: 18, color: colors.fg2 }}>
+                    <Text style={{ fontWeight: '700', color: colors.fg1 }}>{a.who === 'B' ? 'You both' : useName(a.who, state.profiles)}</Text>
+                    {' '}{a.verb}{' '}
+                    <Text style={{ color: colors.fg1, fontWeight: '500' }}>{a.obj}</Text>
+                  </Text>
+                  <Text style={{ fontFamily: 'Courier', fontSize: 9, letterSpacing: 1.8, textTransform: 'uppercase', color: colors.fg5, marginTop: 4 }}>{a.t} · {a.badge}</Text>
+                </View>
+              </View>
+            ))}
+          </Card>
+        )}
+      </View>
 
       {/* Startup Docs quick-start */}
       <CardAlt>

@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   View, Text, TouchableOpacity, Switch as RNSwitch,
-  StyleSheet, ViewStyle, TextStyle,
+  StyleSheet, ViewStyle, TextStyle, Image,
 } from 'react-native';
 import { colors, radius, shadows, SLOT_COLORS } from '../lib/tokens';
 import { Icon } from './Icon';
@@ -40,7 +40,18 @@ export function UserChip({ id, size = 'sm', priv }: { id: UserId | 'B'; size?: C
   }
 
   const slotColor = SLOT_COLORS[id] ?? SLOT_COLORS['1'];
-  const initial = (state.profiles[id]?.displayName?.[0] ?? id).toUpperCase();
+  const profile = state.profiles[id];
+  const initial = (profile?.displayName?.[0] ?? id).toUpperCase();
+  const avatarUrl = profile?.avatarUrl;
+
+  if (avatarUrl) {
+    return (
+      <Image
+        source={{ uri: avatarUrl }}
+        style={{ width: d.sz, height: d.sz, borderRadius: d.r, borderWidth: 1.5, borderColor: slotColor.border }}
+      />
+    );
+  }
 
   return (
     <View style={[base, { backgroundColor: slotColor.bg, borderWidth: 1.5, borderColor: slotColor.border }]}>

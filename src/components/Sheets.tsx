@@ -844,6 +844,7 @@ export function AddTodoSheet() {
   useEffect(() => {
     if (state.modal?.kind === 'addTodo') {
       setStatus(state.modal.initialStatus ?? 'TODO');
+      setText(state.modal.initialText ?? '');
       setProjectName('General');
       setEstimatedHours('');
       setNotes('');

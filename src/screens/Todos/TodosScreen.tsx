@@ -55,12 +55,22 @@ const BUCKET_ORDER = ['TODAY', 'TOMORROW', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'S
 export function TodosScreen() {
   const { state, dispatch } = useStore();
   const [tab, setTab] = useState<'SHARED' | 'MINE' | 'ALL'>('SHARED');
-  const [viewMode, setViewMode] = useState<'LIST' | 'BOARD'>('LIST');
+
+  const viewer = state.viewer;
+  const all = state.todos;
+
+  const prefs = state.profiles[viewer]?.preferences as Record<string, string> | undefined ?? {};
+  const defaultTodoView = (prefs.defaultTodoView === 'Board' ? 'BOARD' : 'LIST');
+
+  const [viewMode, setViewMode] = useState<'LIST' | 'BOARD'>(defaultTodoView);
   const [showDone, setShowDone] = useState(false);
   const [justMe, setJustMe] = useState(false);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
-  const viewer = state.viewer;
-  const all = state.todos;
+
+  // Sync with preferences if it changes (e.g. from profile settings tab)
+  React.useEffect(() => {
+    setViewMode(defaultTodoView);
+  }, [defaultTodoView]);
 
   // Extract unique active project names from all current todos
   const projectFolders = Array.from(

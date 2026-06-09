@@ -11,8 +11,11 @@ import {
   ActivityIndicator,
   Keyboard,
   Alert,
+  Modal,
+  Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Swipeable } from 'react-native-gesture-handler';
 import * as SecureStore from 'expo-secure-store';
 import { colors, radius, shadows, SLOT_COLORS } from '../../lib/tokens';
 import { useStore } from '../../lib/store';
@@ -20,7 +23,7 @@ import { Icon } from '../../components/Icon';
 import { ScreenHeader, UserChip, Card, SecLabel, Divider, styles } from '../../components/Primitives';
 import { supabase } from '../../lib/supabase';
 import { deriveKey, encryptText, decryptText } from '../../lib/crypto';
-import type { UserId, ChatChannel } from '../../lib/types';
+import type { UserId, ChatChannel, ChatMessage } from '../../lib/types';
 
 export function parseMarkdown(text: string, baseStyle: any = {}): React.ReactNode[] {
   if (!text) return [];
@@ -121,6 +124,41 @@ export function ChatScreen() {
   const [activeParamField, setActiveParamField] = useState<string | null>(null);
   
   const scrollViewRef = useRef<ScrollView>(null);
+  const swipeableRefs = useRef<Record<string, Swipeable | null>>({});
+  const messageYRefs = useRef<Record<string, number>>({});
+  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
+
+  const scrollToMessage = (msgId: string) => {
+    const y = messageYRefs.current[msgId];
+    if (y == null) return;
+    scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 80), animated: true });
+    setHighlightedMsgId(msgId);
+    setTimeout(() => setHighlightedMsgId(null), 1200);
+  };
+
+  // Reply state
+  const [replyingTo, setReplyingTo] = useState<{
+    id: string;
+    content: string;
+    sender: string;
+    senderName: string;
+  } | null>(null);
+
+  // Edit state
+  const [editingMsg, setEditingMsg] = useState<{ id: string; content: string } | null>(null);
+
+  // Action menu state (long-press icon row)
+  const [actionMenu, setActionMenu] = useState<{
+    msgId: string;
+    content: string;
+    isMe: boolean;
+    y: number;
+  } | null>(null);
+  const actionMenuMsgYRef = useRef<Record<string, number>>({});
+  const lastTapRef = useRef<Record<string, number>>({});
+  const tapCountRef = useRef<Record<string, number>>({});
+  const [showOriginalId, setShowOriginalId] = useState<string | null>(null);
 
   // E2EE Keys Local State Map (stores derived hex keys per channel ID)
   const [channelKeys, setChannelKeys] = useState<Record<string, string>>({});
@@ -756,58 +794,67 @@ export function ChatScreen() {
     }, 100);
   }, [state.messages, activeChannelId]);
 
-  // Convert Message to Task handler
-  const handleLongPressMessage = (decryptedContent: string, isLocked: boolean) => {
+  const handleLongPressMessage = (msgId: string, decryptedContent: string, isLocked: boolean, isMine: boolean) => {
     if (isLocked) return;
-    Alert.alert(
-      'Message Actions',
-      undefined,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Convert to Shared To-do',
-          onPress: async () => {
-            if (!state.householdId || !state.userId || !activeChannelId) return;
-            setLoading(true);
-            try {
-              // 1. Insert the todo
-              await supabase.from('todos').insert({
-                household_id: state.householdId,
-                owner_id: state.userId,
-                text: decryptedContent.trim(),
-                is_shared: true,
-                priority: 2,
-                due_label: 'TODAY',
-              });
+    dispatch({ t: 'openNewTodo', initialStatus: 'TODO', initialText: decryptedContent.trim() });
+  };
 
-              // 2. Post a dispatcher confirmation message in the chat
-              const encryptionKey = activeChannelId === 'general' ? channelKeys.general : channelKeys[activeChannelId];
-              const dispatcherText = `DISPATCHER: Added task "${decryptedContent.trim()}" directly to the shared backlog.`;
-              const encryptedFeedback = encryptionKey ? encryptText(dispatcherText, encryptionKey) : dispatcherText;
+  const handleDoubleTapMessage = (msgId: string, decryptedContent: string, isLocked: boolean, isMine: boolean) => {
+    if (isLocked || !isMine) return;
+    setActionMenu({ msgId, content: decryptedContent, isMe: isMine, y: 0 });
+  };
 
-              await supabase.from('messages').insert({
-                household_id: state.householdId,
-                sender_short: 'S',
-                content: encryptedFeedback,
-                is_system: true,
-                channel_id: activeChannelId === 'general' ? null : activeChannelId,
-              });
-            } catch (err) {
-              console.warn('Convert error:', err);
-            } finally {
-              setLoading(false);
-            }
-          }
-        }
-      ]
-    );
+  const handleDeleteMessage = async (msgId: string) => {
+    setActionMenu(null);
+    try {
+      await supabase.from('messages').delete().eq('id', msgId);
+    } catch {
+      Alert.alert('Error', 'Could not delete message.');
+    }
+  };
+
+  const handleEditMessage = (msgId: string, content: string) => {
+    setActionMenu(null);
+    setEditingMsg({ id: msgId, content });
+    setText(content);
   };
 
   const handleSend = async (customText?: string) => {
     const msgText = (customText || text).trim();
     if (!msgText || !state.householdId || !state.userId || !activeChannelId) return;
 
+    // Handle edit flow
+    if (editingMsg && !customText) {
+      const encryptionKey = activeChannelId === 'general' ? channelKeys.general : channelKeys[activeChannelId];
+      const encryptedContent = encryptionKey ? encryptText(msgText, encryptionKey) : msgText;
+      // Preserve original_content only on first edit
+      const originalMsg = state.messages.find(m => m.id === editingMsg.id);
+      const originalContent = originalMsg?.isEdited
+        ? originalMsg.originalContent  // already edited before — keep the original
+        : editingMsg.content;           // first edit — store current as original
+      const encryptedOriginal = (encryptionKey && originalContent)
+        ? encryptText(originalContent, encryptionKey)
+        : originalContent;
+      setEditingMsg(null);
+      setText('');
+      setLoading(true);
+      try {
+        await supabase.from('messages').update({
+          content: encryptedContent,
+          is_edited: true,
+          original_content: encryptedOriginal,
+        }).eq('id', editingMsg.id);
+      } catch (err) {
+        Alert.alert('Error', 'Could not edit message.');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     if (!customText) setText('');
+    const currentReply = replyingTo;
+    setReplyingTo(null);
     setLoading(true);
 
     try {
@@ -824,6 +871,11 @@ export function ChatScreen() {
         content: encryptedContent,
         is_system: false,
         channel_id: activeChannelId === 'general' ? null : activeChannelId,
+        ...(currentReply ? {
+          reply_to_id: currentReply.id,
+          reply_to_content: currentReply.content,
+          reply_to_sender: currentReply.sender,
+        } : {}),
       });
 
       if (error) throw error;
@@ -1162,12 +1214,36 @@ I automate co-founder communication and roadmap syncs in real-time using secure,
     }
   };
 
+  // ─── Delete channel handler ───────────────────────────────
+  const handleDeleteChannel = (chanId: string, chanName: string) => {
+    Alert.alert(
+      'Delete Channel',
+      `Delete "${chanName}"? All messages in this room will be permanently removed.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await supabase.from('messages').delete().eq('channel_id', chanId);
+              await supabase.from('chat_channels').delete().eq('id', chanId);
+              // Realtime will remove it from state.channels automatically
+            } catch (err) {
+              Alert.alert('Error', 'Could not delete the channel. Try again.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   // ─── Render Lobby View State ──────────────────────────────
   if (!activeChannelId) {
     const publicChannels = state.channels.filter(c => c.members === null);
     const privateChannels = state.channels.filter(c => c.members !== null && c.members.includes(state.viewer));
     const allChannelsList = [
-      { id: 'general', name: 'General Sync Room', members: null, passphraseCheck: 'general_e2ee' },
+      { id: 'general', name: 'General Sync Room', members: null, passphraseCheck: 'general_e2ee', createdBy: null },
       ...publicChannels,
       ...privateChannels,
     ];
@@ -1195,41 +1271,47 @@ I automate co-founder communication and roadmap syncs in real-time using secure,
         />
 
         <SecLabel count={allChannelsList.length}>Available Channels</SecLabel>
-        
+
         <Card style={{ padding: 0, overflow: 'hidden' }}>
           {allChannelsList.map((chan, idx) => {
             const isE2EE = chan.passphraseCheck !== null;
             const hasAccess = chan.members === null || chan.members.includes(state.viewer);
             if (!hasAccess) return null;
 
-            // Lock status check
             const unlocked = chan.id === 'general' ? !!channelKeys.general : (isE2EE ? !!channelKeys[chan.id] : true);
+            const isGeneral = chan.id === 'general';
+            const canDelete = !isGeneral && chan.createdBy === state.userId;
 
             return (
-              <TouchableOpacity
+              <View
                 key={chan.id}
-                onPress={() => dispatch({ t: 'setActiveChannel', channelId: chan.id })}
                 style={[
                   ch.channelRow,
                   idx < allChannelsList.length - 1 && { borderBottomWidth: 1, borderBottomColor: colors.border06 }
                 ]}
               >
-                <View style={ch.channelIconContainer}>
-                  <Icon name={isE2EE ? (unlocked ? 'unlock' : 'lock') : 'message'} size={18} color={colors.fg2} />
-                </View>
+                <TouchableOpacity
+                  style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 14 }}
+                  onPress={() => dispatch({ t: 'setActiveChannel', channelId: chan.id })}
+                >
+                  <View style={ch.channelIconContainer}>
+                    <Icon name={isE2EE ? (unlocked ? 'unlock' : 'lock') : 'message'} size={18} color={colors.fg2} />
+                  </View>
 
-                <View style={{ flex: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Text style={ch.channelNameText}>{chan.name}</Text>
-                  {isE2EE && (
-                    <View style={[ch.lockPill, unlocked ? ch.lockPillUnlocked : ch.lockPillLocked]}>
-                      <Icon name={unlocked ? 'unlock' : 'lock'} size={8} color={unlocked ? '#4B5563' : colors.fg5} />
-                      <Text style={ch.lockPillText}>{unlocked ? 'UNLOCKED' : 'SECURE E2EE'}</Text>
-                    </View>
-                  )}
-                </View>
-                
-                <Icon name="chev" size={14} color={colors.fg6} />
-              </TouchableOpacity>
+                  <View style={{ flex: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={ch.channelNameText}>{chan.name}</Text>
+                    {isE2EE && (
+                      <View style={[ch.lockPill, unlocked ? ch.lockPillUnlocked : ch.lockPillLocked]}>
+                        <Icon name={unlocked ? 'unlock' : 'lock'} size={8} color={unlocked ? '#4B5563' : colors.fg5} />
+                        <Text style={ch.lockPillText}>{unlocked ? 'UNLOCKED' : 'SECURE E2EE'}</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  <Icon name="chev" size={14} color={colors.fg6} />
+                </TouchableOpacity>
+
+              </View>
             );
           })}
         </Card>
@@ -1293,7 +1375,9 @@ I automate co-founder communication and roadmap syncs in real-time using secure,
   }
 
   // ─── Render Active Immersive Chat Screen View ───────────────
-  const activeKey = activeChannelId === 'general' ? channelKeys.general : channelKeys[activeChannel!.id];
+  const isGeneral = activeChannelId === 'general';
+  const activeKey = isGeneral ? channelKeys.general : channelKeys[activeChannel!.id];
+  const canDeleteChannel = !isGeneral && activeChannel!.createdBy === state.userId;
   
   const visibleMessages = channelMessages.filter(msg => {
     if (!msg.content.startsWith('__E2EE__::')) return true;
@@ -1308,28 +1392,29 @@ I automate co-founder communication and roadmap syncs in real-time using secure,
       {...containerProps}
     >
       <View style={ch.container}>
-        {/* Telegram/WhatsApp style Back Header bar */}
+        {/* Header */}
         <View style={[ch.activeHeaderBar, { paddingTop: insets.top + 8 }]}>
           <TouchableOpacity onPress={() => dispatch({ t: 'setActiveChannel', channelId: null })} style={ch.headerBackBtn}>
             <Icon name="chevLeft" size={20} color={colors.fg1} />
           </TouchableOpacity>
-          
-          <View style={{ flex: 1 }}>
+
+          {/* Tapping the title opens group info — like WhatsApp */}
+          <TouchableOpacity style={{ flex: 1 }} onPress={() => !isGeneral && setShowGroupInfo(true)} activeOpacity={isGeneral ? 1 : 0.6}>
             <Text style={ch.activeChannelTitle} numberOfLines={1}>{activeChannel!.name}</Text>
             <View style={styles.row}>
               {isE2E ? (
                 <View style={[styles.row, { gap: 4 }]}>
                   <Icon name="lock" size={8} color={colors.fg5} />
-                  <Text style={ch.activeChannelSub}>E2EE SECURED</Text>
+                  <Text style={ch.activeChannelSub}>E2EE SECURED{!isGeneral ? ' · TAP FOR INFO' : ''}</Text>
                 </View>
               ) : (
                 <View style={[styles.row, { gap: 4 }]}>
                   <Icon name="users" size={8} color={colors.fg5} />
-                  <Text style={ch.activeChannelSub}>PUBLIC HOUSEHOLD ROOM</Text>
+                  <Text style={ch.activeChannelSub}>PUBLIC ROOM{!isGeneral ? ' · TAP FOR INFO' : ''}</Text>
                 </View>
               )}
             </View>
-          </View>
+          </TouchableOpacity>
 
           {isE2E && (
             <TouchableOpacity onPress={() => handleLockChannel(activeChannelId)} style={ch.headerLockBtn}>
@@ -1368,7 +1453,11 @@ I automate co-founder communication and roadmap syncs in real-time using secure,
                 const slotColor = SLOT_COLORS[msg.senderShort] || SLOT_COLORS['1'];
 
                 return (
-                  <View key={msg.id} style={{ width: '100%' }}>
+                  <View
+                    key={msg.id}
+                    style={{ width: '100%' }}
+                    onLayout={e => { messageYRefs.current[msg.id] = e.nativeEvent.layout.y; }}
+                  >
                     {showHeader && (
                       <View style={ch.dateHeaderContainer}>
                         <View style={ch.dateHeaderLine} />
@@ -1391,23 +1480,124 @@ I automate co-founder communication and roadmap syncs in real-time using secure,
                         </Card>
                       </View>
                     ) : (
-                      <View style={[ch.messageRow, isMe ? ch.rowRight : ch.rowLeft]}>
-                        {!isMe && (
-                          <View style={{ marginRight: 8, alignSelf: 'flex-end', marginBottom: 2 }}>
-                            <UserChip id={msg.senderShort as UserId} size="sm" />
-                          </View>
-                        )}
-                        
-                        <View style={{ maxWidth: '78%' }}>
-                          <TouchableOpacity
-                            activeOpacity={0.85}
-                            onLongPress={() => handleLongPressMessage(decryptedContent, isLocked)}
-                            style={[
-                              ch.bubble,
-                              isMe ? ch.bubbleMe : [ch.bubblePartner, { borderColor: slotColor.border }],
-                              isLocked && (isMe ? ch.bubbleLockedMe : ch.bubbleLockedPartner)
-                            ]}
-                          >
+                      <Swipeable
+                        ref={ref => { swipeableRefs.current[msg.id] = ref; }}
+                        friction={2.5}
+                        overshootFriction={10}
+                        leftThreshold={52}
+                        rightThreshold={52}
+                        renderLeftActions={isMe ? undefined : (progress) => {
+                          const opacity = progress.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 0.6, 1] });
+                          return (
+                            <View style={ch.replyAction}>
+                              <Animated.View style={[ch.replyCircle, { opacity }]}>
+                                <Icon name="arrow" size={14} color={colors.fg2} />
+                              </Animated.View>
+                            </View>
+                          );
+                        }}
+                        renderRightActions={isMe ? (progress) => {
+                          const opacity = progress.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 0.6, 1] });
+                          return (
+                            <View style={[ch.replyAction, { alignItems: 'flex-end' }]}>
+                              <Animated.View style={[ch.replyCircle, { opacity }]}>
+                                <View style={{ transform: [{ scaleX: -1 }] }}>
+                                  <Icon name="arrow" size={14} color={colors.fg2} />
+                                </View>
+                              </Animated.View>
+                            </View>
+                          );
+                        } : undefined}
+                        onSwipeableOpen={() => {
+                          swipeableRefs.current[msg.id]?.close();
+                          const senderName = isMe ? 'You' : (senderProfile?.displayName || `Member ${msg.senderShort}`);
+                          setReplyingTo({
+                            id: msg.id,
+                            content: isLocked ? '[Encrypted message]' : decryptedContent,
+                            sender: msg.senderShort,
+                            senderName,
+                          });
+                        }}
+                      >
+                        <View style={[ch.messageRow, isMe ? ch.rowRight : ch.rowLeft]}>
+                          {!isMe && (
+                            <View style={{ marginRight: 8, alignSelf: 'flex-end', marginBottom: 2 }}>
+                              <UserChip id={msg.senderShort as UserId} size="sm" />
+                            </View>
+                          )}
+
+                          {/* Inline edit/delete icons — left side of own bubble */}
+                          {isMe && actionMenu?.msgId === msg.id && (
+                            <View style={ch.inlineActions}>
+                              <TouchableOpacity style={ch.inlineActionBtn} onPress={() => handleEditMessage(msg.id, actionMenu.content)}>
+                                <Icon name="edit" size={15} color={colors.fg2} />
+                              </TouchableOpacity>
+                              <TouchableOpacity style={ch.inlineActionBtn} onPress={() => handleDeleteMessage(msg.id)}>
+                                <Icon name="trash" size={15} color={colors.destructive} />
+                              </TouchableOpacity>
+                            </View>
+                          )}
+
+                          <View style={[
+                            { maxWidth: '72%', alignSelf: isMe ? 'flex-end' : 'flex-start' },
+                            highlightedMsgId === msg.id && ch.highlightedMsg,
+                          ]}>
+                            <TouchableOpacity
+                              activeOpacity={0.85}
+                              onPress={() => {
+                                if (actionMenu?.msgId === msg.id) {
+                                  setActionMenu(null);
+                                  return;
+                                }
+                                const now = Date.now();
+                                const last = lastTapRef.current[msg.id] ?? 0;
+                                const withinWindow = now - last < 350;
+                                const count = withinWindow ? (tapCountRef.current[msg.id] ?? 1) + 1 : 1;
+                                tapCountRef.current[msg.id] = count;
+                                lastTapRef.current[msg.id] = now;
+                                if (count === 2) {
+                                  handleDoubleTapMessage(msg.id, decryptedContent, isLocked, isMe);
+                                } else if (count === 3) {
+                                  tapCountRef.current[msg.id] = 0;
+                                  handleLongPressMessage(msg.id, decryptedContent, isLocked, isMe);
+                                }
+                              }}
+                              onLongPress={() => {
+                                if (msg.isEdited && msg.originalContent) {
+                                  setShowOriginalId(prev => prev === msg.id ? null : msg.id);
+                                }
+                              }}
+                              style={[
+                                ch.bubble,
+                                isMe ? ch.bubbleMe : [ch.bubblePartner, { borderColor: slotColor.border }],
+                                isLocked && (isMe ? ch.bubbleLockedMe : ch.bubbleLockedPartner),
+                              ]}
+                            >
+                            {/* Quoted reply snippet — inside bubble, WhatsApp/Telegram style */}
+                            {msg.replyToContent ? (
+                              <TouchableOpacity
+                                activeOpacity={0.7}
+                                onPress={() => msg.replyToId && scrollToMessage(msg.replyToId)}
+                                style={[
+                                  ch.replyQuote,
+                                  isMe ? ch.replyQuoteMe : ch.replyQuotePartner,
+                                ]}
+                              >
+                                <View style={[ch.replyQuoteBar, { backgroundColor: isMe ? '#fff' : colors.foreground }]} />
+                                <View style={{ flexShrink: 1, flexGrow: 1, flexBasis: 0 }}>
+                                  <Text style={[ch.replyQuoteName, { color: isMe ? '#fff' : colors.fg1 }]}>
+                                    {msg.replyToSender === state.viewer ? 'You' : (state.profiles[msg.replyToSender as UserId]?.displayName || `Member ${msg.replyToSender}`)}
+                                  </Text>
+                                  <Text
+                                    style={[ch.replyQuoteText, { color: isMe ? 'rgba(255,255,255,0.75)' : colors.fg3 }]}
+                                    numberOfLines={2}
+                                  >
+                                    {msg.replyToContent}
+                                  </Text>
+                                </View>
+                              </TouchableOpacity>
+                            ) : null}
+
                             {isLocked ? (
                               <View style={{ paddingVertical: 4 }}>
                                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
@@ -1423,24 +1613,37 @@ I automate co-founder communication and roadmap syncs in real-time using secure,
                             ) : (
                               renderMessageContent(decryptedContent, isMe, handleOpenDoc)
                             )}
-                            
-                            <View style={{ flexDirection: 'row', alignSelf: 'flex-end', alignItems: 'center', gap: 4, marginTop: 4 }}>
-                              <Text style={[ch.messageSender, { color: isMe ? 'rgba(255,255,255,0.6)' : slotColor.fg }]}>
+
+                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, gap: 8 }}>
+                              <Text style={[ch.messageSender, { color: isMe ? 'rgba(255,255,255,0.6)' : colors.fg4 }]}>
                                 {isMe ? 'YOU' : (senderProfile?.displayName || `Founder ${msg.senderShort}`)}
                               </Text>
-                              {isE2E && (
-                                <>
-                                  <Text style={{ fontSize: 8, color: isMe ? 'rgba(255,255,255,0.4)' : colors.fg6 }}>·</Text>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                {msg.isEdited && (
+                                  <Text style={{ fontSize: 9, color: isMe ? 'rgba(255,255,255,0.45)' : colors.fg5, fontStyle: 'italic' }}>
+                                    edited
+                                  </Text>
+                                )}
+                                {isE2E && (
                                   <Icon name="lock" size={8} color={isMe ? 'rgba(255,255,255,0.45)' : colors.fg6} />
-                                </>
-                              )}
-                              <Text style={[ch.messageTime, isMe ? ch.timeMe : ch.timePartner]}>
-                                {msg.timestamp}
-                              </Text>
+                                )}
+                                <Text style={[ch.messageTime, isMe ? ch.timeMe : ch.timePartner]}>
+                                  {msg.timestamp}
+                                </Text>
+                              </View>
                             </View>
-                          </TouchableOpacity>
+                            </TouchableOpacity>
+                            {showOriginalId === msg.id && msg.originalContent && (
+                              <View style={[ch.originalMsgBox, { alignSelf: isMe ? 'flex-end' : 'flex-start' }]}>
+                                <Text style={ch.originalMsgLabel}>ORIGINAL MESSAGE</Text>
+                                <Text style={ch.originalMsgText}>
+                                  {activeKey ? decryptText(msg.originalContent, activeKey) : msg.originalContent}
+                                </Text>
+                              </View>
+                            )}
+                          </View>
                         </View>
-                      </View>
+                      </Swipeable>
                     )}
                   </View>
                 );
@@ -1558,10 +1761,38 @@ I automate co-founder communication and roadmap syncs in real-time using secure,
             </Card>
           )}
 
+          {/* Edit indicator bar */}
+          {editingMsg && (
+            <View style={ch.replyBar}>
+              <View style={[ch.replyBarAccent, { backgroundColor: '#2563EB' }]} />
+              <View style={{ flex: 1 }}>
+                <Text style={[ch.replyBarName, { color: '#2563EB' }]}>EDITING</Text>
+                <Text style={ch.replyBarText} numberOfLines={1}>{editingMsg.content}</Text>
+              </View>
+              <TouchableOpacity onPress={() => { setEditingMsg(null); setText(''); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Icon name="x" size={16} color={colors.fg4} />
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* Reply preview bar */}
+          {replyingTo && (
+            <View style={ch.replyBar}>
+              <View style={ch.replyBarAccent} />
+              <View style={{ flex: 1 }}>
+                <Text style={ch.replyBarName}>{replyingTo.senderName}</Text>
+                <Text style={ch.replyBarText} numberOfLines={1}>{replyingTo.content}</Text>
+              </View>
+              <TouchableOpacity onPress={() => setReplyingTo(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Icon name="x" size={16} color={colors.fg4} />
+              </TouchableOpacity>
+            </View>
+          )}
+
           <View style={ch.inputContainer}>
             <TextInput
               style={ch.input}
-              placeholder={isE2E ? "Send secure message or use /todo, /event..." : "Send public message..."}
+              placeholder={editingMsg ? 'Edit message…' : replyingTo ? `Replying to ${replyingTo.senderName}…` : (isE2E ? "Send secure message or use /todo, /event..." : "Send public message...")}
               placeholderTextColor={colors.fg6}
               value={text}
               onChangeText={handleTextChange}
@@ -1582,6 +1813,83 @@ I automate co-founder communication and roadmap syncs in real-time using secure,
           </View>
         </View>
       </View>
+
+      {/* ── Group Info Modal ───────────────────────────────── */}
+      <Modal
+        visible={showGroupInfo}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowGroupInfo(false)}
+      >
+        <TouchableOpacity
+          style={ch.groupInfoOverlay}
+          activeOpacity={1}
+          onPress={() => setShowGroupInfo(false)}
+        />
+        <View style={[ch.groupInfoSheet, { paddingBottom: insets.bottom + 16 }]}>
+          {/* Handle bar */}
+          <View style={ch.groupInfoHandle} />
+
+          {/* Room name + edit */}
+          <View style={ch.groupInfoHeader}>
+            <View style={ch.groupInfoIconWrap}>
+              <Icon name="message" size={22} color={colors.fg2} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={ch.groupInfoRoomName}>{activeChannel?.name}</Text>
+              <Text style={ch.groupInfoRoomSub}>
+                {isE2E ? 'E2EE ENCRYPTED' : 'PUBLIC ROOM'} · {Object.keys(state.profiles).length} MEMBERS
+              </Text>
+            </View>
+          </View>
+
+          <View style={ch.groupInfoDivider} />
+
+          {/* Members list */}
+          <Text style={ch.groupInfoSectionLabel}>MEMBERS</Text>
+          <ScrollView style={{ maxHeight: 260 }} showsVerticalScrollIndicator={false}>
+            {Object.entries(state.profiles).map(([slot, prof]) => (
+              <View key={slot} style={ch.groupInfoMemberRow}>
+                <UserChip id={slot as UserId} size="sm" />
+                <View style={{ flex: 1 }}>
+                  <Text style={ch.groupInfoMemberName}>{prof.displayName}</Text>
+                  {prof.roleLabel ? (
+                    <Text style={ch.groupInfoMemberRole}>{prof.roleLabel}</Text>
+                  ) : null}
+                </View>
+                {slot === state.viewer && (
+                  <View style={ch.groupInfoYouPill}>
+                    <Text style={ch.groupInfoYouText}>YOU</Text>
+                  </View>
+                )}
+              </View>
+            ))}
+          </ScrollView>
+
+          <View style={ch.groupInfoDivider} />
+
+          {/* Actions */}
+          {canDeleteChannel && (
+            <TouchableOpacity
+              style={ch.groupInfoDeleteBtn}
+              onPress={() => {
+                setShowGroupInfo(false);
+                handleDeleteChannel(activeChannel!.id, activeChannel!.name);
+              }}
+            >
+              <Icon name="trash" size={16} color={colors.destructive} />
+              <Text style={ch.groupInfoDeleteText}>Delete Room</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
+            style={ch.groupInfoCloseBtn}
+            onPress={() => setShowGroupInfo(false)}
+          >
+            <Text style={ch.groupInfoCloseBtnText}>Close</Text>
+          </TouchableOpacity>
+        </View>
+      </Modal>
     </Container>
   );
 }
@@ -1611,8 +1919,21 @@ const ch = StyleSheet.create({
   channelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 16,
-    gap: 14,
+    paddingVertical: 14,
+    paddingLeft: 16,
+    paddingRight: 12,
+    minHeight: 64,
+  },
+  deleteChannelBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: 'rgba(220,38,38,0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(220,38,38,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
   },
   channelIconContainer: {
     width: 38,
@@ -2063,6 +2384,271 @@ const ch = StyleSheet.create({
     fontSize: 8,
     fontFamily: 'Courier',
     fontWeight: '800',
+    letterSpacing: 1,
+  },
+  inlineActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginRight: 8,
+  },
+  inlineActionBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: colors.bgTint04,
+    borderWidth: 1,
+    borderColor: colors.border08,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  highlightedMsg: {
+    backgroundColor: 'rgba(0,0,0,0.07)',
+    borderRadius: 18,
+    padding: 4,
+  },
+  // ── Reply swipe action hint
+  replyAction: {
+    width: 56,
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+    paddingHorizontal: 16,
+  },
+  replyCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: colors.bgTint06,
+    borderWidth: 1,
+    borderColor: colors.border10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // ── Quoted reply snippet — bleeds to bubble edges
+  replyQuote: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginTop: -10,
+    marginLeft: -14,
+    marginRight: -14,
+    marginBottom: 10,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    minWidth: 160,
+  },
+  replyQuoteMe: {
+    backgroundColor: 'rgba(255,255,255,0.13)',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.1)',
+  },
+  replyQuotePartner: {
+    backgroundColor: 'rgba(0,0,0,0.055)',
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border08,
+  },
+  replyQuoteBar: {
+    width: 3,
+    borderRadius: 2,
+    minHeight: 28,
+    flexShrink: 0,
+  },
+  replyQuoteName: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  replyQuoteText: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  // ── Original message reveal (triple-tap on edited message)
+  originalMsgBox: {
+    marginTop: 4,
+    maxWidth: '78%',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border08,
+    backgroundColor: colors.bgTint02,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  originalMsgLabel: {
+    fontFamily: 'Courier',
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    color: colors.fg5,
+    marginBottom: 4,
+  },
+  originalMsgText: {
+    fontSize: 13,
+    color: colors.fg3,
+    lineHeight: 18,
+  },
+  // ── Reply preview bar above input
+  replyBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: colors.border06,
+    backgroundColor: colors.bgTint02,
+  },
+  replyBarAccent: {
+    width: 3,
+    height: 32,
+    borderRadius: 2,
+    backgroundColor: colors.foreground,
+  },
+  replyBarName: {
+    fontFamily: 'Courier',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: colors.fg2,
+    marginBottom: 2,
+  },
+  replyBarText: {
+    fontSize: 12,
+    color: colors.fg5,
+    lineHeight: 16,
+  },
+  // ── Group Info Modal
+  groupInfoOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  groupInfoSheet: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 12,
+    paddingHorizontal: 20,
+    ...shadows.lg,
+  },
+  groupInfoHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border12,
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  groupInfoHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    marginBottom: 16,
+  },
+  groupInfoIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    backgroundColor: colors.bgTint04,
+    borderWidth: 1,
+    borderColor: colors.border08,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  groupInfoRoomName: {
+    fontWeight: '900',
+    fontSize: 17,
+    letterSpacing: -0.3,
+    color: colors.fg1,
+  },
+  groupInfoRoomSub: {
+    fontFamily: 'Courier',
+    fontSize: 8,
+    fontWeight: '800',
+    color: colors.fg5,
+    letterSpacing: 1,
+    marginTop: 2,
+  },
+  groupInfoDivider: {
+    height: 1,
+    backgroundColor: colors.border06,
+    marginVertical: 12,
+  },
+  groupInfoSectionLabel: {
+    fontFamily: 'Courier',
+    fontSize: 9,
+    fontWeight: '800',
+    color: colors.fg5,
+    letterSpacing: 1.5,
+    marginBottom: 10,
+  },
+  groupInfoMemberRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 8,
+  },
+  groupInfoMemberName: {
+    fontWeight: '700',
+    fontSize: 14,
+    color: colors.fg1,
+  },
+  groupInfoMemberRole: {
+    fontSize: 11,
+    color: colors.fg5,
+    marginTop: 1,
+  },
+  groupInfoYouPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 9999,
+    backgroundColor: colors.bgTint04,
+    borderWidth: 1,
+    borderColor: colors.border08,
+  },
+  groupInfoYouText: {
+    fontFamily: 'Courier',
+    fontSize: 8,
+    fontWeight: '800',
+    color: colors.fg4,
+    letterSpacing: 1,
+  },
+  groupInfoDeleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 4,
+  },
+  groupInfoDeleteText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.destructive,
+  },
+  groupInfoCloseBtn: {
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: colors.bgTint04,
+    borderWidth: 1,
+    borderColor: colors.border08,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  groupInfoCloseBtnText: {
+    fontFamily: 'Courier',
+    fontSize: 12,
+    fontWeight: '800',
+    color: colors.fg2,
     letterSpacing: 1,
   },
 });

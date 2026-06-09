@@ -8,7 +8,7 @@ export type IconName =
   | 'check' | 'x' | 'sun' | 'moon' | 'pin' | 'run' | 'cart' | 'coffee'
   | 'settings' | 'bolt' | 'flag' | 'headphones' | 'lock' | 'unlock' | 'eye'
   | 'eyeOff' | 'dots' | 'search' | 'repeat' | 'note' | 'book' | 'message'
-  | 'trash';
+  | 'trash' | 'camera' | 'image' | 'edit';
 
 interface IconProps {
   name: IconName;
@@ -65,6 +65,9 @@ export function Icon({ name, size = 18, color = colors.fg1, strokeWidth = 1.6 }:
     book:       <><Path {...props} d="M4 4h7a4 4 0 0 1 4 4v12H8a4 4 0 0 1-4-4V4z"/><Path {...props} d="M20 4h-5a4 4 0 0 0-4 4v12h5a4 4 0 0 0 4-4V4z"/></>,
     message:    <Path {...props} d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>,
     trash:      <><Path {...props} d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/><Path {...props} d="M10 11v5M14 11v5"/></>,
+    camera:     <><Path {...props} d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><Circle {...props} cx="12" cy="13" r="4"/></>,
+    image:      <><Rect {...props} x="3" y="3" width="18" height="18" rx="2"/><Circle {...props} cx="8.5" cy="8.5" r="1.5"/><Path {...props} d="m21 15-5-5L5 21"/></>,
+    edit:       <><Path {...props} d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><Path {...props} d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></>,
   };
 
   return (

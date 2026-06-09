@@ -14,7 +14,7 @@ export function AuthScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState('');
 
-  async function sendMagicLink() {
+  async function sendOtpCode() {
     if (!email.trim()) return;
     setLoading(true);
     setError('');
@@ -55,7 +55,7 @@ export function AuthScreen() {
 
         {step === 'email' && (
           <>
-            <Text style={s.sub}>Enter your email to get a sign-in link.</Text>
+            <Text style={s.sub}>Enter your email to get a sign-in code.</Text>
             <TextInput
               style={s.input}
               placeholder="you@example.com"
@@ -66,23 +66,23 @@ export function AuthScreen() {
               keyboardType="email-address"
               autoComplete="email"
               returnKeyType="send"
-              onSubmitEditing={sendMagicLink}
+              onSubmitEditing={sendOtpCode}
             />
             {error ? <Text style={s.err}>{error}</Text> : null}
-            <TouchableOpacity style={s.btn} onPress={sendMagicLink} disabled={loading}>
+            <TouchableOpacity style={s.btn} onPress={sendOtpCode} disabled={loading}>
               {loading
                 ? <ActivityIndicator color="#fff" />
-                : <Text style={s.btnLabel}>SEND LINK</Text>}
+                : <Text style={s.btnLabel}>SEND CODE</Text>}
             </TouchableOpacity>
           </>
         )}
 
         {step === 'sent' && (
           <>
-            <Text style={s.sub}>Check your inbox — we sent a 6-digit code to{'\n'}<Text style={s.bold}>{email}</Text></Text>
+            <Text style={s.sub}>Check your inbox — we sent a code to{'\n'}<Text style={s.bold}>{email}</Text></Text>
             <TextInput
               style={s.input}
-              placeholder="12345678"
+              placeholder="Code"
               placeholderTextColor={colors.fg4}
               value={otp}
               onChangeText={setOtp}
@@ -97,6 +97,9 @@ export function AuthScreen() {
               {loading
                 ? <ActivityIndicator color="#fff" />
                 : <Text style={s.btnLabel}>VERIFY</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity onPress={sendOtpCode} disabled={loading} style={s.link}>
+              <Text style={s.linkLabel}>Resend code</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => { setStep('email'); setError(''); setOtp(''); }} style={s.link}>
               <Text style={s.linkLabel}>Use a different email</Text>

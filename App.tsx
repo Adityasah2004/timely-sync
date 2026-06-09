@@ -1,7 +1,8 @@
-import React, { useEffect } from 'react';
-import { View, StatusBar, ActivityIndicator, BackHandler } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StatusBar, ActivityIndicator, BackHandler } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StoreProvider, useStore } from './src/lib/store';
 import { TopBar } from './src/navigation/TopBar';
 import { TabBar } from './src/navigation/TabBar';
@@ -17,8 +18,49 @@ import { AuthScreen } from './src/screens/Auth/AuthScreen';
 import { HouseholdScreen } from './src/screens/Auth/HouseholdScreen';
 import { EventSheet, AddEventSheet, AddTodoSheet, TodoDetailSheet, AddChannelSheet, DocDetailSheet } from './src/components/Sheets';
 
+const ONBOARDING_KEY = 'timely_onboarding_seen';
+
+function SkeletonLoader() {
+  const [pulse, setPulse] = React.useState(0.4);
+  React.useEffect(() => {
+    const id = setInterval(() => {
+      setPulse((p) => (p === 0.4 ? 1.0 : 0.4));
+    }, 800);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <View style={{ flex: 1, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', gap: 16 }}>
+      <View style={{ opacity: pulse }}>
+        <Text style={{ fontFamily: 'Courier', fontSize: 13, fontWeight: '700', letterSpacing: 4, color: '#141414' }}>TIMELY</Text>
+      </View>
+      <ActivityIndicator size="small" color="#141414" />
+    </View>
+  );
+}
+
 function AppInner() {
   const { state, dispatch } = useStore();
+  // null = not yet checked, true = needs onboarding, false = already seen
+  const [needsOnboarding, setNeedsOnboarding] = useState<boolean | null>(null);
+
+  // Check AsyncStorage once auth is ready and we know user has no household
+  useEffect(() => {
+    if (!state.authReady) return;
+    if (!state.session) { setNeedsOnboarding(false); return; }
+    if (state.profilesLoaded && state.householdId) { setNeedsOnboarding(false); return; }
+    if (!state.profilesLoaded) return;
+
+    // User is signed in, profiles loaded, but has no household — check if onboarding was seen
+    AsyncStorage.getItem(ONBOARDING_KEY).then((val) => {
+      setNeedsOnboarding(val !== 'true');
+    });
+  }, [state.authReady, state.session, state.profilesLoaded, state.householdId]);
+
+  async function finishOnboarding() {
+    await AsyncStorage.setItem(ONBOARDING_KEY, 'true');
+    setNeedsOnboarding(false);
+  }
 
   // Intercept Android back gesture/button: go to Today instead of exiting
   useEffect(() => {
@@ -40,13 +82,9 @@ function AppInner() {
     return () => sub.remove();
   }, [state.tab, state.modal, state.activeChannelId]);
 
-  // Splash while Supabase restores session
-  if (!state.authReady) {
-    return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' }}>
-        <ActivityIndicator size="large" color="#141414" />
-      </View>
-    );
+  // Splash while Supabase restores session or profiles load
+  if (!state.authReady || (state.session && !state.profilesLoaded)) {
+    return <SkeletonLoader />;
   }
 
   // Not signed in
@@ -54,12 +92,16 @@ function AppInner() {
     return <AuthScreen />;
   }
 
-  // Signed in but no household yet
+  // Signed in but no household — show onboarding first for new users
   if (!state.householdId) {
+    if (needsOnboarding === null) return <SkeletonLoader />;
+    if (needsOnboarding) {
+      return <OnboardingScreen onDone={finishOnboarding} />;
+    }
     return <HouseholdScreen userId={state.userId!} />;
   }
 
-  // Onboarding flow
+  // Onboarding triggered manually (e.g. from You tab)
   if (state.showOnboarding) {
     return <OnboardingScreen onDone={() => dispatch({ t: 'finishOnboard' })} />;
   }
